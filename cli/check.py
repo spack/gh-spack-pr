@@ -36,6 +36,7 @@ from _vendor import pexpect
 
 ExitCode: TypeAlias = int
 Strs: TypeAlias = List[str]
+Passes = Strs
 Fails: TypeAlias = List[Tuple[str, str]]
 
 Success: ExitCode = 0
@@ -853,7 +854,21 @@ def filter_spec_data(specs: str) -> str:
     return specs
 
 
-def spack_install(specs, args) -> Tuple[List[str], List[Tuple[str, str]], List[str], List[str]]:
+def update_changes_requested_for_command(args, spec: str, command: str, already_requested: Strs):
+    """
+    Check if the PR already has a request for changes with the same command:
+    If so, add the spec to already_requested to don't request changes again.
+    """
+    pr = get_pull_request_status(args)
+    for review in pr.get("reviews", []):
+        if review.get("state") != "CHANGES_REQUESTED":
+            continue
+        if command in review.get("body", ""):
+            print("Already requested changes for", spec)
+            already_requested.append(spec)
+
+
+def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails, Strs, Strs]:
     """Install the packages."""
     passed = []
     failed = []
@@ -908,14 +923,9 @@ def spack_install(specs, args) -> Tuple[List[str], List[Tuple[str, str]], List[s
                 raw_report = header + failure_summary([(spec, install_log)])
                 print(raw_report)
                 print(f"------------------------- FAILED {spec} -------------------------")
-                pr = get_pull_request_status(args)
-                for review in pr.get("reviews", []):
-                    if review.get("state") != "CHANGES_REQUESTED":
-                        continue
-                    if command in review.get("body", ""):
-                        print("Already requested changes for", spec)
-                        already_requested.append(spec)
 
+                # request changes for spec if not already requested for the same command:
+                update_changes_requested_for_command(args, spec, command, already_requested)
                 if spec not in already_requested:
                     input_str = f"Request changes for {spec} in {args.pull_request_url}:? [y/N] "
                     if not args.yes and input(input_str).lower() != "y":
