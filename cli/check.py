@@ -1053,9 +1053,6 @@ def parse_args() -> argparse.Namespace:
         help="Checkout the PR branch (find it by PR query) to check the changes.",
         type=str,
     )
-    argparser.add_argument(
-        "-l", "--label-success", action="store_true", help="Label the PR on success."
-    )
     # FIXME: Check of approval from `bin/spack maintainers` is still needed
     # and decline merging if not approved by the maintainers:
     argparser.add_argument("-m", "--merge", action="store_true", help="Merge the PR on success.")
@@ -1483,7 +1480,7 @@ def build_and_act_on_results(args, installed, specs_to_check):
     """Install the packages and act on the results."""
 
     passed, failed, requested_changes_for, already_requested = spack_install(specs_to_check, args)
-    about_build_host, os_name, os_version_id = get_os_info()
+    about_build_host, _, _ = get_os_info()
 
     # Remove the already requested changes from the failed specs:
     report_failed = [spec for spec in failed if spec[0] not in already_requested]
@@ -1505,15 +1502,6 @@ def build_and_act_on_results(args, installed, specs_to_check):
     if failed or not passed + installed:
         print("Link to the PR:", args.pull_request_url)
         return 1
-
-    if args.label_success:
-        # Not actively used now, but could be used to label the PR with the build status:
-        label = f"Built on {os_name} {os_version_id}"
-        print('All specs passed, labeling the PR with: "{label}"')
-        error = spawn("gh", ["pr", "edit", args.pull_request, "--add-label", label])
-        if error:
-            print("Failed to label the PR.")
-            return error
 
     return check_approval_and_merge(args, build_results)
 
