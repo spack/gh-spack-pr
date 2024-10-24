@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Tool to run 'spack install' on changed recipes by a checked out PR branch."""
+"""Tool to run 'spack install' on changed recipes by a checked out PR branch.
+
+Commands:
+list files: return the list of changed files in the PR diff.
+edit files: edit the changed files in the PR diff.
+"""
 # Copyright 2024, Bernhard Kaindl
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
@@ -678,6 +683,9 @@ def get_specs_to_check(args) -> List[str]:
 
     add_recipe_variant_version(specs, recipe, new_variants, new_versions, deprecated)
 
+    args.changed_files = changed_files
+    args.recipes = recipes
+
     if args.verbose:
         print("Changed files:", changed_files)
         print("Changed recipes:", recipes)
@@ -1074,11 +1082,34 @@ def parse_args() -> argparse.Namespace:
     )
     argparser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output.")
     argparser.add_argument("-y", "--yes", action="store_true", help="Answer yes to all questions.")
+
+    argparser.add_argument("command", nargs="?", help="The command to run.")
+    argparser.add_argument("subcommand", nargs="?", help="The subcommand to run.")
     return argparser.parse_args()
 
 
-def main(args) -> int:
-    """Run the main code for the script using the parsed command line flags"""
+def run_command(args):
+    """Run the commands specified by the command line arguments."""
+
+    if args.command == "list":
+        if args.subcommand and args.subcommand == "files":
+            get_specs_to_check(args)
+            print("\n".join(args.changed_files))
+            return not args.changed_files
+    if args.command == "edit":
+        if args.subcommand and args.subcommand == "files":
+            get_specs_to_check(args)
+            if not args.changed_files:
+                print("No changed files found.", file=sys.stderr)
+                return 1
+            editor = os.environ.get("EDITOR", "vim")
+            return spawn(editor, args.changed_files)
+    print("Unknown command:", args.command, args.subcommand or "")
+    return 1
+
+
+def prepare_github_cli(args) -> int:
+    """Prepare the GitHub CLI for use."""
     # TODO:
     # - Add support for installing the packages in a container, sandbox, or remote host.
     #   Use pxssh module of pexpect: https://pexpect.readthedocs.io/en/stable/api/pxssh.html
@@ -1105,6 +1136,21 @@ def main(args) -> int:
 
         print("Setting the default remote repository to spack/spack")
         spawn("gh", ["repo", "set-default", "spack/spack"])
+
+    # TODO: Check if the spack remote is added and add it if not:
+    # git remote add upstream git@github.com:spack/spack.git
+    return Success
+
+
+def main(args) -> int:
+    """Run the main code for the script using the parsed command line flags"""
+
+    ret = prepare_github_cli(args)
+    if ret:
+        return ret
+
+    if args.command:
+        return run_command(args)
 
     if args.queue:
         return check_queue_file(args)
