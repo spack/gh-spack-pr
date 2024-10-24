@@ -4,6 +4,8 @@
 Commands:
 list files: return the list of changed files in the PR diff.
 edit files: edit the changed files in the PR diff.
+style files: Fix the style of the changed files in the PR diff.
+commit files: Commit the changed files in the PR diff.
 """
 # Copyright 2024, Bernhard Kaindl
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
@@ -774,7 +776,6 @@ def add_recipe_variant_version(
         for version in new_versions:
             specs.append(changed_recipe[0] + "@" + version)
     else:
-        print("Adding recipe (found no changed variants or versions):", changed_recipe[0])
         if variants:
             specs.extend([changed_recipe[0] + default_variants_disable, changed_recipe[0]])
         else:
@@ -1088,27 +1089,50 @@ def parse_args() -> argparse.Namespace:
     return argparser.parse_args()
 
 
-def run_command(args):
+def check_for_pr_changes(args: argparse.Namespace) -> ExitCode:
+    """Check if the PR has changes to the recipes or other files."""
+
+    get_specs_to_check(args)
+    if not args.changed_files:
+        print("No changed files found.", file=sys.stderr)
+    return 0 if args.changed_files else 1
+
+
+def run_commands_for_changed_files(args: argparse.Namespace) -> ExitCode:
     """Run the commands specified by the command line arguments."""
 
+    ret = check_for_pr_changes(args)
+    if ret:
+        return ret
+
     if args.command == "list":
-        if args.subcommand and args.subcommand == "files":
-            get_specs_to_check(args)
-            print("\n".join(args.changed_files))
-            return not args.changed_files
+        print("\n".join(args.changed_files))
+        return not args.changed_files
+
     if args.command == "edit":
-        if args.subcommand and args.subcommand == "files":
-            get_specs_to_check(args)
-            if not args.changed_files:
-                print("No changed files found.", file=sys.stderr)
-                return 1
-            editor = os.environ.get("EDITOR", "vim")
-            return spawn(editor, args.changed_files)
-    print("Unknown command:", args.command, args.subcommand or "")
+        editor = os.environ.get("EDITOR", "vim")
+        return spawn(editor, args.changed_files)
+
+    if args.command == "style":
+        # Check if black and isort are installed and use them to format the files:
+        if which("isort") and which("black"):
+            spawn("isort", args.changed_files)
+            spawn("black", args.changed_files)
+        else:
+            spawn("bin/spack", ["style", *args.changed_files])
+        return spawn("git", ["diff", "--exit-code"])
+
+    if args.command == "commit":
+        ret = spawn("git", ["add", "-p", *args.changed_files])
+        if not ret:
+            ret = spawn("git", ["commit", "-m", "Changes committed by gh-spack-pr"])
+        return ret
+
+    print("Unknown command:", args.command, args.subcommand)
     return 1
 
 
-def prepare_github_cli(args) -> int:
+def prepare_github_cli(args: argparse.Namespace) -> int:
     """Prepare the GitHub CLI for use."""
     # TODO:
     # - Add support for installing the packages in a container, sandbox, or remote host.
@@ -1142,7 +1166,7 @@ def prepare_github_cli(args) -> int:
     return Success
 
 
-def main(args) -> int:
+def main(args: argparse.Namespace) -> int:
     """Run the main code for the script using the parsed command line flags"""
 
     ret = prepare_github_cli(args)
@@ -1150,7 +1174,9 @@ def main(args) -> int:
         return ret
 
     if args.command:
-        return run_command(args)
+        if not args.subcommand or args.subcommand != "files":
+            return 1
+        return run_commands_for_changed_files(args)
 
     if args.queue:
         return check_queue_file(args)
@@ -1162,7 +1188,7 @@ def main(args) -> int:
     return check_pr_of_currently_checked_out_branch(args)
 
 
-def check_pr_of_currently_checked_out_branch(args) -> ExitCode:
+def check_pr_of_currently_checked_out_branch(args: argparse.Namespace) -> ExitCode:
     """Check the PR of the currently checked out branch."""
 
     # Get URL of the current PR for displaying in the logs:
@@ -1180,7 +1206,7 @@ def check_pr_of_currently_checked_out_branch(args) -> ExitCode:
     return check_and_build(args)
 
 
-def check_queue_file(args) -> int:
+def check_queue_file(args: argparse.Namespace) -> int:
     """Check the queue file of PRs to check."""
     with open(args.queue, "r", encoding="utf-8") as queue:
         args.queue = None
@@ -1204,7 +1230,7 @@ def check_queue_file(args) -> int:
     return Success
 
 
-def check_and_build(args):
+def check_and_build(args: argparse.Namespace) -> ExitCode:
     """Check the PR changes and build the packages."""
     # Get the specs to check.
     if args.build:
