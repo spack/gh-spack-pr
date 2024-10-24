@@ -22,7 +22,7 @@ from io import BytesIO
 from logging import INFO, basicConfig, info
 from pathlib import Path
 from shutil import which
-from subprocess import getoutput
+from subprocess import getstatusoutput
 from typing import Any, Dict, List, Tuple, TypeAlias
 
 from _vendor import pexpect
@@ -1127,7 +1127,9 @@ def check_pr_of_currently_checked_out_branch(args) -> ExitCode:
     args.pull_request = args.pull_request_url.split("/")[-1]
 
     if not pull_request_is_ready_for_review(args):
-        return Success
+        # If there is no PR or the PR is not ready for review, don't approve or merge:
+        if args.approve or args.merge:
+            return 1
 
     return check_and_build(args)
 
@@ -1511,7 +1513,10 @@ def get_pull_request_status(args: argparse.Namespace) -> Dict[str, Any]:
     if not args.pull_request:
         assert False, "No pull request number given."
 
-    return json.loads(getoutput(f"gh pr view {args.pull_request} --json state,reviews,labels"))
+    err, stdout = getstatusoutput(f"gh pr view {args.pull_request} --json state,reviews,labels")
+    if err:
+        return {}
+    return json.loads(stdout)
 
 
 def is_closed_or_merged(pr: Dict[str, Any]) -> bool:
@@ -1582,6 +1587,9 @@ def pull_request_is_ready_for_review(args: argparse.Namespace) -> bool:
 
     print("Checking the approval status of the PR:", args.pull_request_url)
     pr = get_pull_request_status(args)
+    if not pr:
+        print("Failed to get the PR status.")
+        return False
     if is_closed_or_merged(pr):
         print("PR is already merged or closed.")
         return False
