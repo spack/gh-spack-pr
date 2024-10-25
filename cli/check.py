@@ -29,7 +29,7 @@ from io import BytesIO
 from logging import INFO, basicConfig, info
 from pathlib import Path
 from shutil import which
-from subprocess import getstatusoutput
+from subprocess import getoutput, getstatusoutput
 from typing import Any, Dict, List, Tuple, TypeAlias
 
 from _vendor import pexpect
@@ -189,7 +189,7 @@ def install_github_cli_debian_repo() -> ExitCode:
     if not os.path.exists(sources):
         # save the repo configuration to a temporary file:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            arch = subprocess.getoutput("dpkg --print-architecture")
+            arch = getoutput("dpkg --print-architecture")
             tmp.write(
                 f"deb [arch={arch} signed-by={ring}]"
                 " https://cli.github.com/packages stable main\n".encode()
@@ -1158,9 +1158,9 @@ def prepare_github_cli(args: argparse.Namespace) -> int:
     # Check if the repo has a default remote repository set:
     # It is needed for the gh pr commands to work.
     # If not set, set the default remote repository to the spack repository.:
-    default_remote = subprocess.getoutput("gh repo set-default --view")
+    default_remote = getoutput("gh repo set-default --view")
     if default_remote.startswith("no default repository"):
-        remote = subprocess.getoutput("git ls-remote --get-url")
+        remote = getoutput("git ls-remote --get-url")
         if "/spack" not in remote:
             print("The remote of the current branch does not appear to be a spack repo:")
             print("'git ls-remote --get-url' shows:", remote)
@@ -1202,7 +1202,7 @@ def check_pr_of_currently_checked_out_branch(args: argparse.Namespace) -> ExitCo
     """Check the PR of the currently checked out branch."""
 
     # Get URL of the current PR for displaying in the logs:
-    args.pull_request_url = subprocess.getoutput("gh pr view --json url -q .url")
+    args.pull_request_url = getoutput("gh pr view --json url -q .url")
 
     # Get the number of the current PR:
     # We use it for any further API calls so we don't act on the wrong PR.
@@ -1731,10 +1731,137 @@ def review_pr(args: argparse.Namespace, kind: str, build_results: str) -> ExitCo
     return spawn("gh", cmd, show_command=False)
 
 
+def extract_reviews_by_category(args: argparse.Namespace) -> bool:
+    """Check if the approval shall be skipped."""
+
+    # Check the comments for the PR and see if the PR is approved by the maintainers:
+    args.latest_maintainer_comment = {}
+    args.latest_member_comment = {}
+    args.latest_review = {}
+    args.last_request_comment = {}
+    for comment in args.pull_request_comments:
+        if comment["author"]["login"] in args.maintainers:
+            args.latest_maintainer_comment = comment
+        if comment["authorAssociation"] == "MEMBER":
+            args.latest_member_comment = comment
+        if comment["state"] in ("CHANGES_REQUESTED", "APPROVED"):
+            args.latest_review = comment
+        for key in ["please", "change", "add", "remove"]:
+            if key in comment["body"]:
+                args.last_request_comment = comment
+        for key in ["LGTM", "approve", "looks good", "thanks", "great"]:
+            if key in comment["body"]:
+                # print(comment["body"])
+                args.latest_approve_comment = comment
+    # print("Last maintainer comment:", latest_maintainer_comment["body"])
+    # print("Last member comment:", latest_member_comment["body"])
+    # print("Last review:", latest_review["body"])
+    # print("Last review comment:", last_request_comment["body"])
+    return True
+
+
+def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
+    """Check if the approval shall be skipped."""
+
+    # Check the comments for the PR and see if the PR is approved by the maintainers:
+    json_pull_request_comments = getoutput("gh pr view --json comments")
+    args.pull_request_comments = json.loads(json_pull_request_comments)
+
+    # Check the review status, prioritizing the reviews of maintainers and members:
+    args.maintainers = getoutput("bin/spack maintainers " + " ".join(args.recipes)).split()
+    if not extract_reviews_by_category(args):
+        return True
+
+    # Check the review status specifically for the maintainers:
+    # First, check for requested changes by the maintainers, members, or reviewers:
+    # Precedence of the reviews:
+    # 1. Last maintainer comment
+    # 2. Last member comment
+    # 3. Last review
+    # 4. Last review comment
+    latest_prioritized_reviews = [
+        args.latest_maintainer_comment,
+        args.latest_member_comment,
+        args.latest_review,
+        args.last_request_comment,
+    ]
+    args.requested_changes = {}
+    for review in latest_prioritized_reviews:
+        if not review:
+            continue
+        args.last_possible_request = review
+        author = review["author"]["login"]
+        if review == args.latest_review:
+            who = "Unprivileged Reviewer"
+        else:
+            who = "Maintainer" if author in args.maintainers else "Member"
+        if review["state"] == "CHANGES_REQUESTED":
+            print(f"{who} {author} requested changes:")
+            print(review["body"])
+            args.requested_changes = review
+            return True
+        if review == args.latest_request_comment:
+            print(f"It looks like {who} {author} asked for changes:")
+            print(review["body"])
+            args.requested_changes = review
+            return True
+
+    # If no changes are requested, look for approvals:
+    latest_prioritized_reviews = [
+        args.latest_maintainer_comment,
+        args.latest_member_comment,
+        args.latest_review,
+        args.latest_approve_comment,
+    ]
+    for review in latest_prioritized_reviews:
+        if not review:
+            continue
+        author = review["author"]["login"]
+        if review["state"] == "APPROVED":
+            print(f"{author} requested changes:")
+            print(review["body"])
+            args.approvals.append(review)
+        if review == args.latest_request_comment:
+            print(f"It looks like {author} asked for changes:")
+            print(review["body"])
+            args.approvals.append(review)
+
+    if args.maintainers:
+        print("Maintainers of the recipes:", " ".join(args.maintainers))
+        approvers, requesters_of_changes = print_reviewers(args.pull_request_comments)
+        # Check if the PR is approved by at least of the maintainers:
+        if not set(args.maintainers) & set(approvers):
+            print("The PR is not approved by maintainers.")
+            return True
+        # Double-check if the PR is not requested changes by any of the maintainers:
+        # Check if the PR is not requested changes by any of the maintainers:
+        if set(args.maintainers) & set(requesters_of_changes):
+            print("Maintainers requested changes for this PR")
+            return True
+    return False
+
+
+def print_requested_changes(args: argparse.Namespace) -> bool:
+    """Print the requested changes and return True if changes are requested."""
+
+    if approve_shall_be_skipped(args):
+        print("Changes requested, skipping approval of the PR.")
+        if args.requested_changes:
+            print("Changes requested by maintainers, skipping approval of the PR:")
+            requester = args.requested_changes["author"]["login"]
+            print(f"Changes requested by {requester}:")
+            print(args.requested_changes["body"])
+        return True
+    return False
+
+
 def check_approval_and_merge(args: argparse.Namespace, build_results: str):
     """Check if the PR is/can be approved and merge the PR if all specs passed."""
 
     if args.approve:
+        if print_requested_changes(args):
+            return Success
+
         print("Approve requested, please review the PR diff before merging!")
         spawn("gh", ["pr", "diff"])
 
@@ -1792,8 +1919,20 @@ def merge_pr_if_requested(args) -> ExitCode:
             print("Changes requested by reviewers, skipping approval of the PR.")
             return Success
 
+        # Check again if the PR is still ready for review:
+        if not pull_request_is_ready_for_review(args):
+            print("The PR is not ready for review, skipping merging.")
+            return Success
+
+        # Check if the PR is approved by the maintainers or any changes are requested:
+        if print_requested_changes(args):
+            return Success
+
         # Show the current status of the PR:
         spawn("gh", ["pr", "view", args.pull_request])
+
+        # Show the status of the checks of the PR:
+        spawn("gh", ["pr", "checks", args.pull_request])
 
         if args.yes or input("\n\nMERGE this PR now? [y/n]: ") == "y":
             # TODO: Check/Fix the PR title and squashed commit messages for the correct format.
