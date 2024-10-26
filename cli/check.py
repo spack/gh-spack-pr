@@ -973,21 +973,19 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
                     with open(install_log + ".report", "w", encoding="utf-8") as report_file:
                         report_file.write(report)
 
+                    if not args.request_changes:
+                        continue
+
                     kind = "--comment"
-                    if args.request_changes:
-                        print("Request changes? (else the report is added just comment):")
-                        req = input_str = f"Request changes to {args.pull_request_url}:? [y/N] "
-                        if req == "y":
-                            kind = "--request-changes"
+                    print("Request changes? (else you can add the report as a comment):")
+                    req = input_str = f"Request changes to {args.pull_request_url}:? [y/N] "
+                    if req == "y":
+                        kind = "--request-changes"
                     else:
                         req = input_str = f"Add a comment to {args.pull_request_url}:? [y/N] "
                         if req != "y":
                             continue
-
-                    ret = spawn("gh", ["pr", "review", kind, "--body", report], show_command=False)
-                    if ret:
-                        print("Failed to request changes for", spec)
-                        raise ChildProcessError("Failed to request changes for " + spec)
+                    submit_request_for_spec(args, kind, report, spec)
                     requested_changes_for.append(spec)
 
     if args.verbose:
@@ -997,6 +995,21 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
         print("Requested changes for:", " ".join(requested_changes_for))
         print("Already requested changes for:", " ".join(already_requested))
     return passed, failed, requested_changes_for, already_requested
+
+
+def submit_request_for_spec(args, kind, report, spec):
+    """Submit a request for changes for the spec."""
+
+    author = args.pr["author"]["login"]
+    # Create an summary of the failure:
+    summary = f"<details><summary>@{author}, click here to see a build failure on {spec}</summary>"
+    header = "Hello @{author}, the installation of `{spec}` failed in an automated build:"
+    body = f"{summary}<br>\n\n{header}\n\n{report}\n</details>"
+
+    ret = spawn("gh", ["pr", "review", kind, "--body", body], show_command=False)
+    if ret:
+        print("Failed to request changes for", spec)
+        raise ChildProcessError("Failed to request changes for " + spec)
 
 
 def add_compiler_to_specs(specs_to_check, args) -> List[str]:
