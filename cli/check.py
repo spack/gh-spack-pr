@@ -1224,8 +1224,11 @@ def prepare_github_cli(args: argparse.Namespace) -> int:
         print("Setting the default remote repository to spack/spack")
         spawn("gh", ["repo", "set-default", "spack/spack"])
 
-    # TODO: Check if the spack remote is added and add it if not:
-    # git remote add upstream git@github.com:spack/spack.git
+    # Check if the spack remote is added and add it if not:
+    remotes = getoutput("git remote -v")
+    if "spack/spack" not in remotes:
+        print("The spack remote is not added, adding it.")
+        spawn("git", ["remote", "add", "spack", "git@github.com:spack/spack.git"])
     return Success
 
 
