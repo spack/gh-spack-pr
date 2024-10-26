@@ -968,7 +968,10 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
         if not args.yes and input(input_str).lower() != "y":
             continue
 
-        raw_report += abbreviated_spec_info(spec, install_log + ".spec")
+        input_str = "Add the fully concretized spec to the report? [Y/n] "
+        if args.yes or input(input_str).lower() != "n":
+            raw_report += abbreviated_spec_info(spec, install_log + ".spec")
+
         report = remove_color_terminal_codes(raw_report)
         print("Writing report to", install_log + ".report")
         with open(install_log + ".report", "w", encoding="utf-8") as report_file:
@@ -980,7 +983,7 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
         if req == "y":
             kind = "--request-changes"
         else:
-            req = input_str = f"Add a comment to {args.pull_request_url}:? [y/N] "
+            req = input(f"Add it as comment to {args.pull_request_url}:? [y/N] ")
             if req != "y":
                 continue
         submit_request_for_spec(args, kind, report, spec)
