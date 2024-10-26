@@ -939,54 +939,52 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
                     print("Retrying with misc cache cleaned:")
                     ret = spawn("bin/spack", cmd, logfile=install_logfile)
 
-        # After the build, time has passed: Refresh our status information about the PR from GitHub:
-        args.pr = get_pull_request_status(args)
-
         if ret == 0:
             print(f"\n------------------------- Passed {spec} -------------------------")
             passed.append(spec)
+            continue
+
+        print(f"\n------------------------- FAILED {spec} -------------------------")
+        command = " ".join(["bin/spack", *cmd])
+        print("\nFailed command:\n\n", command + "\n")
+        print(f"Log file: {install_log}")
+        failed.append((spec, install_log))
+
+        if not args.request_changes:
+            continue
+
+        print(f"\n------------------------- FAILED {spec} -------------------------")
+        header = "This command failed: `" + command + "`\n"
+        raw_report = header + failure_summary([(spec, install_log)])
+        # Refresh our status information about the PR from GitHub:
+        args.pr = get_pull_request_status(args)
+        # request changes for spec if not already requested for the same command:
+        update_changes_requested_for_command(args, spec, command, already_requested)
+        if spec in already_requested:
+            print("Already requested changes for", spec)
+            continue
+
+        input_str = f"Submit this failure of {spec} to {args.pull_request_url}:? [y/N] "
+        if not args.yes and input(input_str).lower() != "y":
+            continue
+
+        raw_report += abbreviated_spec_info(spec, install_log + ".spec")
+        report = remove_color_terminal_codes(raw_report)
+        print("Writing report to", install_log + ".report")
+        with open(install_log + ".report", "w", encoding="utf-8") as report_file:
+            report_file.write(report)
+
+        kind = "--comment"
+        print("Request changes? (else you can add the report as a comment):")
+        req = input(f"Submit as change request to {args.pull_request_url}:? [y/N] ")
+        if req == "y":
+            kind = "--request-changes"
         else:
-            print(f"\n------------------------- FAILED {spec} -------------------------")
-            command = " ".join(["bin/spack", *cmd])
-            print("\nFailed command:\n\n", command + "\n")
-            print(f"Log file: {install_log}")
-            failed.append((spec, install_log))
-
-            if args.request_changes:
-                print(f"\n------------------------- FAILED {spec} -------------------------")
-                header = "This command failed: `" + command + "`\n"
-                raw_report = header + failure_summary([(spec, install_log)])
-                print(raw_report)
-                print(f"------------------------- FAILED {spec} -------------------------")
-
-                # request changes for spec if not already requested for the same command:
-                update_changes_requested_for_command(args, spec, command, already_requested)
-                if spec not in already_requested:
-                    input_str = f"Request changes for {spec} in {args.pull_request_url}:? [y/N] "
-                    if not args.yes and input(input_str).lower() != "y":
-                        continue
-
-                    raw_report += abbreviated_spec_info(spec, install_log + ".spec")
-                    report = remove_color_terminal_codes(raw_report)
-
-                    print("Writing report to", install_log + ".report")
-                    with open(install_log + ".report", "w", encoding="utf-8") as report_file:
-                        report_file.write(report)
-
-                    if not args.request_changes:
-                        continue
-
-                    kind = "--comment"
-                    print("Request changes? (else you can add the report as a comment):")
-                    req = input_str = f"Request changes to {args.pull_request_url}:? [y/N] "
-                    if req == "y":
-                        kind = "--request-changes"
-                    else:
-                        req = input_str = f"Add a comment to {args.pull_request_url}:? [y/N] "
-                        if req != "y":
-                            continue
-                    submit_request_for_spec(args, kind, report, spec)
-                    requested_changes_for.append(spec)
+            req = input_str = f"Add a comment to {args.pull_request_url}:? [y/N] "
+            if req != "y":
+                continue
+        submit_request_for_spec(args, kind, report, spec)
+        requested_changes_for.append(spec)
 
     if args.verbose:
         print("Summary:")
@@ -1304,10 +1302,24 @@ def check_queue_file(args: argparse.Namespace) -> int:
     return Success
 
 
+def recipes_of_specs(specs: Strs) -> Strs:
+    """Get the recipes from the specs."""
+    recipes = []
+    for spec in specs:
+        match = re.search(r"(\w+)", spec)
+        if match:
+            recipes.append(match.group(1))
+    return list(set(recipes))
+
+
 def check_and_build(args: argparse.Namespace) -> ExitCode:
     """Check the PR changes and build the packages."""
     # Get the specs to check.
     if args.build:
+        # args.recipes = recipes_of_specs(specs_to_check)
+        # Get the recipes from the PR despite the specs to check.
+        # Sets args.recipes to the recipes of the PR, from --build:
+        get_specs_to_check(args)
         specs_to_check = args.build.split(",")
     else:
         specs_to_check = get_specs_to_check(args)
