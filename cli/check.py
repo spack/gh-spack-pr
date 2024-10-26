@@ -11,9 +11,37 @@ commit files: Commit the changed files in the PR diff.
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 # TODOs:
-# - run spack maintainers to check for maintainers of the packages.
-#   Only attempt to merge if the maintainers approved merging the PR.
-# - Limit the amount of builds: For some PR, the amount of versions*variants can be >300.
+
+# - generate_review_report_for_maintainers(args, to_review)
+#   Check the packages individually and mention the recipes that still need a review:
+#
+#   If a package has multiple maintainers, and one approved already, that package is approved.
+#   Do this for all packages and generate a review report for the maintainers.
+#   Show which packages are approved and which need a review.
+
+# - Check if reviews from the maintainers are requested
+#   (spackbot should do this, but it doesn't always work):
+#   For getting the reviews, use the following command:
+#   gh pr view 46913 --json latestReviews
+#   For getting the requested reviews, use the following command:
+#   gh pr view 46913 --json reviewRequests
+#   If maintainers are not in latestReviews and reviewRequests, it seems there is a problem with
+#   spackbot. In this case, it is better to ask the maintainers to review the PR.
+#   add them for review:
+#   gh pr edit 46913 --add-reviewer <maintainer>
+#   Then add a comment while their @mention to kindly ask for review within 5 days.
+#   gh pr review 46913 --comment (use the comment from disclaimer_for_maintainers())
+#   Add a label to the PR to indicate that the PR is waiting for the maintainers to review it.
+#   gh pr edit 46913 --add-label waiting-on-maintainer
+
+# - Skip asking members of the Spack organization to review the PR.
+#   (Add a list of members or use the GitHub API to get the members of the Spack organization.)
+
+# - Try to use reviewbot as the interface for submitting PR comments:
+#   - it can update existing review comments
+#   - it can give review comments at specific lines
+
+# - Limit the amount of builds: For some PRs, the amount of versions*variants can be >300.
 import argparse
 import json
 import os
@@ -38,6 +66,7 @@ ExitCode: TypeAlias = int
 Strs: TypeAlias = List[str]
 Passes = Strs
 Fails: TypeAlias = List[Tuple[str, str]]
+Pr: TypeAlias = Dict[str, Any]
 
 Success: ExitCode = 0
 
@@ -353,7 +382,7 @@ def gh_cli_auth_info() -> Tuple[ExitCode, str]:
     return subprocess.getstatusoutput("gh auth status")
 
 
-def get_github_user() -> str:
+def get_github_user(args: argparse.Namespace) -> str:
     """Get the GitHub user name."""
 
     exitcode, out = gh_cli_auth_info()
@@ -364,7 +393,8 @@ def get_github_user() -> str:
     if not user_match:
         print("Failed to get the GitHub user name.")
         return ""
-    return user_match.group(2)
+    args.github_user = user_match.group(2)
+    return args.github_user
 
 
 def authenticate_github_cli() -> ExitCode:
@@ -859,8 +889,7 @@ def update_changes_requested_for_command(args, spec: str, command: str, already_
     Check if the PR already has a request for changes with the same command:
     If so, add the spec to already_requested to don't request changes again.
     """
-    pr = get_pull_request_status(args)
-    for review in pr.get("reviews", []):
+    for review in args.pr["reviews"]:
         if review.get("state") != "CHANGES_REQUESTED":
             continue
         if command in review.get("body", ""):
@@ -906,6 +935,9 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
                     spawn("bin/spack", ["clean", "--misc"])
                     print("Retrying with misc cache cleaned:")
                     ret = spawn("bin/spack", cmd, logfile=install_logfile)
+
+        # After the build, time has passed: Refresh our status information about the PR from GitHub:
+        args.pr = get_pull_request_status(args)
 
         if ret == 0:
             print(f"\n------------------------- Passed {spec} -------------------------")
@@ -987,6 +1019,12 @@ def add_compiler_to_specs(specs_to_check, args) -> List[str]:
         message = message.replace(" ", "\n")
     print("Specs with compilers:", message)
     return specs_to_check
+
+
+def get_maintainers(recipes: Strs) -> Strs:
+    """Get the maintainers of the recipes."""
+
+    return getoutput(f"bin/spack maintainers {' '.join(recipes)}").split()
 
 
 def checkout_pr_by_search_query(args: argparse.Namespace) -> ExitCode:
@@ -1072,8 +1110,6 @@ def parse_args() -> argparse.Namespace:
         help="Checkout the PR branch (find it by PR query) to check the changes.",
         type=str,
     )
-    # FIXME: Check of approval from `bin/spack maintainers` is still needed
-    # and decline merging if not approved by the maintainers:
     argparser.add_argument("-m", "--merge", action="store_true", help="Merge the PR on success.")
     argparser.add_argument(
         "-r", "--request-changes", action="store_true", help="Request changes on failure."
@@ -1202,15 +1238,25 @@ def check_pr_of_currently_checked_out_branch(args: argparse.Namespace) -> ExitCo
     """Check the PR of the currently checked out branch."""
 
     # Get URL of the current PR for displaying in the logs:
-    args.pull_request_url = getoutput("gh pr view --json url -q .url")
+    exitcode, args.pull_request_url = getstatusoutput("gh pr view --json url -q .url")
+    if exitcode:
+        print(f"'gh pr view' failed with:\n\n{args.pull_request_url}\n\nCheck:")
+        print(
+            "- Please check out the PR branch with 'gh pr checkout {<number> | <url> | <branch>}'"
+        )
+        print("- Or use an alias like 'gh co' to checkout a PR branch.")
+        print("- In case you used 'git switch <ref>, use 'git switch <branch>' instead.")
+        return exitcode
 
     # Get the number of the current PR:
     # We use it for any further API calls so we don't act on the wrong PR.
     args.pull_request = args.pull_request_url.split("/")[-1]
 
-    if not pull_request_is_ready_for_review(args):
+    args.pr = get_pull_request_status(args)
+    if not pull_request_is_ready_for_review(args, args.pr):
         # If there is no PR or the PR is not ready for review, don't approve or merge:
         if args.approve or args.merge:
+            print("The PR is not ready for review.")
             return 1
 
     return check_and_build(args)
@@ -1224,16 +1270,18 @@ def check_queue_file(args: argparse.Namespace) -> int:
             print("Checking PR:", line)
             if line.startswith("#"):
                 line = line[1:]
-            pr_number = line.split()[0]
-            ret = checkout_pr_by_number(pr_number)
+            args.pull_request = line.split()[0]
+            # Check if args.pull_request is already closed or merged:
+            args.pr = get_pull_request_status(args)
+            if is_closed_or_merged(args.pr):
+                print("PR is already closed or merged.")
+                continue
+            if is_approved_or_changes_requested_by_me(args, args.pr):
+                print("PR is already approved or changes requested by me.\n\n")
+                continue
+            ret = checkout_pr_by_number(args.pull_request)
             if ret:
                 return ret
-            args.pull_request = str(pr_number)
-            # Check if args.pull_request is already closed or merged:
-            pr = get_pull_request_status(args)
-            if is_closed_or_merged(pr):
-                continue
-
             exitcode = main(args)
             if exitcode != 0:
                 return exitcode
@@ -1474,20 +1522,27 @@ def spack_find_summary(spack_find_output: str) -> List[str]:
     """Convert the spack find output to an HTML-like summary that can be expanded."""
     i = 0
     html = [""]
+    end = ">```\n\n</details>\n\n"
+    new_arch = True
+
     for line in spack_find_output.split("\n"):
         if not line:
-            end = ">```\n\n</details>\n\n"
             if html[i][-len(end) :] != end:
-                html[i] += ">```\n\n</details>\n\n"
+                html[i] += end
             continue
         line = remove_color_terminal_codes(line)
         if "installed packages" in line:
             continue
         if line[:3] == "-- ":  # New compiler group, add a section header for it
             html.append(spack_find_summary_new_arch(re.sub(r" -+.*$", "", line[3:])))
+            new_arch = True
             i += 1
             continue
         if re.match(r"[a-z]", line[0]):  # This is a new root/explicit spec, add a summary for it
+            # Skip adding the end if we just started a new arch section:
+            if not new_arch and html[i][-len(end) :] != end:
+                html[i] += end
+            new_arch = False
             html.append(spack_find_summary_new_root(line))
             i += 1
             continue
@@ -1498,10 +1553,10 @@ def spack_find_summary(spack_find_output: str) -> List[str]:
 def generate_build_results(installed: Strs, passed: Strs, fails: Fails, about_build_host) -> str:
     """Generate a report using GitHub markdown format for cut-and-paste into the PR comment."""
 
-    base = "`spack install` on the changed recipes of this PR was "
+    base = ":information_source: `spack install` on the changed recipes of this PR was "
     stat = "successful" if not fails else "not successful"
     head = f"{base}{stat}[^1]{about_build_host}!"
-    clk = f"<b>Click here for a summary of the {stat} builds.</b>"
+    clk = f"Click here for a summary of the {stat} builds."
     msg = f"{head}<details><summary>{clk}</summary>\n"
     msg += "These changed specs were found using [gh pr diff](https://cli.github.com):\n"
     msg += "- `" + "`\n- `".join(installed + passed) + "`\n\n"
@@ -1560,6 +1615,73 @@ def check_diff_and_commit(args):
     return Success
 
 
+def mention_maintainers(maintainers: Strs) -> str:
+    """Mention the maintainers of the recipes."""
+
+    if len(maintainers) > 1:
+        # Skip mentioning members of the Spack organization when asking for a review.
+        # Likely skip tgamblin, adamjstewart, and others that are the maintainers of many recipes.
+        skip_mention = ["tgamblin", "adamjstewart"]
+        maintainers = [maintainer for maintainer in maintainers if maintainer not in skip_mention]
+
+    return "@" + " and ".join(", @".join(maintainers).rsplit(", ", 1))
+
+
+def generated_report_for_maintainers(args, body):
+    """Generate a report for the maintainers of the recipes."""
+
+    if not args.maintainers:
+        return body
+    return (
+        f"Hello {mention_maintainers(args.maintainers)}, I generated some build results:<br>\n"
+        + body
+    )
+
+
+def disclaimer_for_maintainers(args: argparse.Namespace) -> str:
+    """Generate a disclaimer for the maintainers of the recipes."""
+
+    need_review_from = args.maintainers
+    # Don't ask the author of the PR to review his own PR
+    if args.pr["author"]["login"] in need_review_from:
+        need_review_from.remove(args.pr["author"]["login"])
+    # Don't ask myself to review the PR:
+    if args.github_user in need_review_from:
+        need_review_from.remove(args.github_user)
+    # Don't ask maintainers that already reviewed the PR to review it again:
+    reviewers = get_reviewers(args.pr, "APPROVED") + get_reviewers(args.pr, "CHANGES_REQUESTED")
+    to_review = [maintainer for maintainer in need_review_from if maintainer not in reviewers]
+
+    # Skip asking members of the Spack organization to review the PR.
+    # (FIXME: Add a list of maintainers)
+    skip_mention = ["tgamblin", "adamjstewart"]
+    to_review = [maintainer for maintainer in to_review if maintainer not in skip_mention]
+
+    # TODO: generate_review_report_for_maintainers(args, to_review)
+    # Check the packages individually and mention the recipes that still need a review:
+    #
+    # If a package has multiple maintainers, and one approved already, that package is approved.
+    # Do this for all packages and generate a review report for the maintainers.
+    # Show which packages are approved and which need a review.
+
+    if not to_review:
+        return ""
+    return (
+        "<details><summary>Click here for a disclaimer for the maintainers of the recipes\n\n"
+        f"</summary><br>👍 Hello {mention_maintainers(to_review)}!<br><br>\n\n"
+        "- We would like to ask you if you could review this PR within 5 days.\n"
+        "- If the PR is not reviewed within 5 days, the PR can be approved and merged by members.\n"
+        "- Please use 👍, Approve, LGTM or Request the comment so we can act accordingly.\n"
+        "- If you like to review but need more time, please add a comment to the PR.\n"
+        "- If you have questions (or would like to be removed as maintainer), please let us know.\n"
+        "\n"
+        "Thank you for your time and effort!<br>\n"
+        "You can also join the Spack Slack channel for more information and have a chat:\n"
+        "https://spackpm.slack.com → #pull-requests."
+        f" Thank you and best regards, @{args.github_user}</details>\n\n"
+    )
+
+
 def build_and_act_on_results(args, installed, specs_to_check):
     """Install the packages and act on the results."""
 
@@ -1567,16 +1689,25 @@ def build_and_act_on_results(args, installed, specs_to_check):
     about_build_host, _, _ = get_os_info()
 
     # Remove the already requested changes from the failed specs:
-    report_failed = [spec for spec in failed if spec[0] not in already_requested]
+    not_yet_reported = [spec for spec in failed if spec[0] not in already_requested]
     # Remove the requested changes from the failed specs:
-    report_failed = [spec for spec in report_failed if spec[0] not in requested_changes_for]
+    not_yet_reported = [spec for spec in not_yet_reported if spec[0] not in requested_changes_for]
+
+    # After the build, time has passed: Refresh our status information about the PR from GitHub:
+    args.pr = get_pull_request_status(args)
+
+    args.maintainers = get_maintainers(args.recipes)
 
     # Generate a report in markdown format for cut-and-paste into the PR comment:
-    build_results = generate_build_results(installed, passed, report_failed, about_build_host)
+    body = generate_build_results(installed, passed, not_yet_reported, about_build_host)
+
+    if args.maintainers:
+        body += disclaimer_for_maintainers(args)
+        body = generated_report_for_maintainers(args, body)
 
     # Create a change request for the failed specs:
-    if report_failed and args.request_changes:
-        return create_change_request(args, build_results)
+    if not_yet_reported and args.request_changes:
+        return create_change_request(args, body)
 
     if args.approve or args.merge:
         ret = check_diff_and_commit(args)
@@ -1587,7 +1718,7 @@ def build_and_act_on_results(args, installed, specs_to_check):
         print("Link to the PR:", args.pull_request_url)
         return 1
 
-    return check_approval_and_merge(args, build_results)
+    return check_approval_and_merge(args, body)
 
 
 def get_pull_request_status(args: argparse.Namespace) -> Dict[str, Any]:
@@ -1595,18 +1726,17 @@ def get_pull_request_status(args: argparse.Namespace) -> Dict[str, Any]:
     if not args.pull_request:
         assert False, "No pull request number given."
 
-    err, stdout = getstatusoutput(f"gh pr view {args.pull_request} --json state,reviews,labels")
+    fields = "author,state,reviews,latestReviews,labels"
+    err, stdout = getstatusoutput(f"gh pr view {args.pull_request} --json {fields}")
     if err:
-        return {}
+        raise ChildProcessError(f"Failed to get the PR status for {fields}:\n" + stdout)
     return json.loads(stdout)
 
 
 def is_closed_or_merged(pr: Dict[str, Any]) -> bool:
     """Check if the PR is already merged or closed."""
 
-    pr_state = pr.get("state")
-    assert pr_state, "Failed to get the PR state."
-    return pr_state in ["MERGED", "CLOSED"]
+    return pr["state"] in ["MERGED", "CLOSED"]
 
 
 def get_reviewers(pr: Dict[str, Any], state: str) -> List[str]:
@@ -1624,7 +1754,7 @@ def get_labels(pr: Dict[str, Any]) -> List[str]:
     """Get the list of labels of the PR."""
 
     labels = []
-    for label_entry in pr.get("labels", []):
+    for label_entry in pr["labels"]:
         labels.append(label_entry["name"])
 
     return labels
@@ -1652,11 +1782,11 @@ def print_reviewers(pr: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     return approvers, requesters
 
 
-def is_approved_or_changes_requested_by_me(pr: Dict[str, Any]) -> bool:
+def is_approved_or_changes_requested_by_me(args: argparse.Namespace, pr: Pr) -> bool:
     """Check if the PR is already approved by me."""
 
     approvers, requesters = print_reviewers(pr)
-    github_user = get_github_user()
+    github_user = get_github_user(args)
     if not github_user:
         print("Failed to get the GitHub user.")
         raise ConnectionError("Failed to get the GitHub user.")
@@ -1664,18 +1794,14 @@ def is_approved_or_changes_requested_by_me(pr: Dict[str, Any]) -> bool:
     return github_user in approvers or github_user in requesters
 
 
-def pull_request_is_ready_for_review(args: argparse.Namespace) -> bool:
+def pull_request_is_ready_for_review(args: argparse.Namespace, pr: Pr) -> bool:
     """Check if the PR is ready for review."""
 
     print("Checking the approval status of the PR:", args.pull_request_url)
-    pr = get_pull_request_status(args)
-    if not pr:
-        print("Failed to get the PR status.")
-        return False
     if is_closed_or_merged(pr):
         print("PR is already merged or closed.")
         return False
-    if is_approved_or_changes_requested_by_me(pr):
+    if is_approved_or_changes_requested_by_me(args, pr):
         print(f"{args.pull_request_url} is already approved (or changes requested) by me.")
         if args.force:
             print("Force flag is set, will build, approve, and merge the PR.")
@@ -1690,7 +1816,7 @@ def create_change_request(args: argparse.Namespace, build_results: str) -> ExitC
     """Create a change request for the failed specs."""
     print(build_results)
 
-    if not pull_request_is_ready_for_review(args):
+    if not pull_request_is_ready_for_review(args, args.pr):
         print("The PR is not ready for review, skipping creating a change request.")
         return Success
 
@@ -1732,31 +1858,29 @@ def review_pr(args: argparse.Namespace, kind: str, build_results: str) -> ExitCo
 
 
 def extract_reviews_by_category(args: argparse.Namespace) -> bool:
-    """Check if the approval shall be skipped."""
+    """Check if the approval shall be skipped. Note: New and untested code."""
 
     # Check the comments for the PR and see if the PR is approved by the maintainers:
     args.latest_maintainer_comment = {}
     args.latest_member_comment = {}
     args.latest_review = {}
-    args.last_request_comment = {}
-    for comment in args.pull_request_comments:
+    args.latest_request_comment = {}
+    args.latest_approve_comment = {}
+    print("Checking the comments for the PR:", args.pull_request_url)
+    print("Maintainers of the recipes:", " ".join(args.maintainers))
+    for comment in args.pr_comments_reviews["reviews"] + args.pr_comments_reviews["comments"]:
         if comment["author"]["login"] in args.maintainers:
             args.latest_maintainer_comment = comment
         if comment["authorAssociation"] == "MEMBER":
             args.latest_member_comment = comment
-        if comment["state"] in ("CHANGES_REQUESTED", "APPROVED"):
+        if comment.get("state") in ("CHANGES_REQUESTED", "APPROVED"):
             args.latest_review = comment
         for key in ["please", "change", "add", "remove"]:
             if key in comment["body"]:
                 args.last_request_comment = comment
         for key in ["LGTM", "approve", "looks good", "thanks", "great"]:
             if key in comment["body"]:
-                # print(comment["body"])
                 args.latest_approve_comment = comment
-    # print("Last maintainer comment:", latest_maintainer_comment["body"])
-    # print("Last member comment:", latest_member_comment["body"])
-    # print("Last review:", latest_review["body"])
-    # print("Last review comment:", last_request_comment["body"])
     return True
 
 
@@ -1764,11 +1888,9 @@ def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
     """Check if the approval shall be skipped."""
 
     # Check the comments for the PR and see if the PR is approved by the maintainers:
-    json_pull_request_comments = getoutput("gh pr view --json comments")
-    args.pull_request_comments = json.loads(json_pull_request_comments)
+    args.pr_comments_reviews = json.loads(getoutput("gh pr view --json comments,reviews"))
 
     # Check the review status, prioritizing the reviews of maintainers and members:
-    args.maintainers = getoutput("bin/spack maintainers " + " ".join(args.recipes)).split()
     if not extract_reviews_by_category(args):
         return True
 
@@ -1783,7 +1905,7 @@ def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
         args.latest_maintainer_comment,
         args.latest_member_comment,
         args.latest_review,
-        args.last_request_comment,
+        args.latest_request_comment,
     ]
     args.requested_changes = {}
     for review in latest_prioritized_reviews:
@@ -1795,7 +1917,7 @@ def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
             who = "Unprivileged Reviewer"
         else:
             who = "Maintainer" if author in args.maintainers else "Member"
-        if review["state"] == "CHANGES_REQUESTED":
+        if review.get("state") == "CHANGES_REQUESTED":
             print(f"{who} {author} requested changes:")
             print(review["body"])
             args.requested_changes = review
@@ -1813,11 +1935,12 @@ def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
         args.latest_review,
         args.latest_approve_comment,
     ]
+    args.approvals = []
     for review in latest_prioritized_reviews:
         if not review:
             continue
         author = review["author"]["login"]
-        if review["state"] == "APPROVED":
+        if review.get("state") == "APPROVED":
             print(f"{author} requested changes:")
             print(review["body"])
             args.approvals.append(review)
@@ -1826,13 +1949,20 @@ def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
             print(review["body"])
             args.approvals.append(review)
 
+    args.approved_by_maintainers = True  # If no maintainers, they don't need to approve.
+    print("Maintainers of the recipes:", ", ".join(args.maintainers))
     if args.maintainers:
-        print("Maintainers of the recipes:", " ".join(args.maintainers))
-        approvers, requesters_of_changes = print_reviewers(args.pull_request_comments)
+        print("Maintainers of the recipes:", ", ".join(args.maintainers))
+        # print("Approvals by maintainers:", args.approvals)
+        # print("Requested changes by maintainers:", " ".join(args.requested_changes))
+        # print args.pull_request_reviews:
+        # print("All reviews:", args.pull_request_reviews)
+        approvers, requesters_of_changes = print_reviewers(args.pr_comments_reviews)
         # Check if the PR is approved by at least of the maintainers:
         if not set(args.maintainers) & set(approvers):
             print("The PR is not approved by maintainers.")
-            return True
+            args.approved_by_maintainers = False
+            return False
         # Double-check if the PR is not requested changes by any of the maintainers:
         # Check if the PR is not requested changes by any of the maintainers:
         if set(args.maintainers) & set(requesters_of_changes):
@@ -1865,15 +1995,14 @@ def check_approval_and_merge(args: argparse.Namespace, build_results: str):
         print("Approve requested, please review the PR diff before merging!")
         spawn("gh", ["pr", "diff"])
 
-        if not pull_request_is_ready_for_review(args):
+        if not pull_request_is_ready_for_review(args, args.pr):
             return Success
 
         print("\nBuild results:\n\n")
         print(build_results + "\n\n")
         print("Link to the PR:", args.pull_request_url)
 
-        pr = get_pull_request_status(args)
-        if changes_requested(args, pr):
+        if changes_requested(args, args.pr):
             print("Changes requested by reviewers, skipping approval of the PR.")
             # Ask if the build results should be added as a comment to the PR:
             if args.yes or input("Add the build results as a comment to the PR [y/n]: ") == "y":
@@ -1881,13 +2010,13 @@ def check_approval_and_merge(args: argparse.Namespace, build_results: str):
 
             return Success
 
-        print_reviewers(pr)
+        print_reviewers(args.pr)
 
         # Check if the PR is really ready for approval before approving:
         # Ask for confirmation before approving the PR.
-        target = "approval" if not changes_requested(args, pr) else "comment"
+        target = "approval" if not changes_requested(args, args.pr) else "comment"
         if args.yes or input(f"Submit the build results as an {target} [y/n]: ") == "y":
-            option = "--approve" if not changes_requested(args, pr) else "--comment"
+            option = "--approve" if not changes_requested(args, args.pr) else "--comment"
             exitcode = review_pr(args, option, build_results)
             if exitcode:
                 return exitcode
@@ -1896,10 +2025,10 @@ def check_approval_and_merge(args: argparse.Namespace, build_results: str):
     else:
         print(build_results)
 
-    return merge_pr_if_requested(args)
+    return merge_pr_if_requested(args, args.pr)
 
 
-def merge_pr_if_requested(args) -> ExitCode:
+def merge_pr_if_requested(args: argparse.Namespace, pr: Dict[str, Any]) -> ExitCode:
     """Merge the PR if all specs passed."""
     # Merge the PR if all specs passed. Only pass -m/--merge if you really want to merge.
     # TODO: Check if approved by needed reviewers, etc.
@@ -1910,17 +2039,41 @@ def merge_pr_if_requested(args) -> ExitCode:
     # Review wait status can be checked using labels, comments, etc.
 
     if args.merge:
+        if not args.approved_by_maintainers:
+            print("Maintainers of the recipes:", " ".join(args.maintainers))
+            for review in pr["latestReviews"]:
+                author = review["author"]["login"]
+                association = review["authorAssociation"]
+                state = review["state"]
+                body = review["body"]
+                print(f"{author} ({association}): {state} {body}")
+
+            print("The PR is not approved by maintainers, skipping merging.")
+            return 1
+
+        # Check for merge-blocking labels
+        blocking_labels = [
+            "waiting-on-maintainer",
+            "waiting-on-review",
+            "don't-merge-yet",
+            "bug",
+            "question",
+        ]
+        blockers = set(blocking_labels) & set(get_labels(pr))
+        if blockers:
+            print("The PR has blocking labels, skipping merging: ", ", ".join(blockers))
+            return 1
+
         if not args.approve:
             print("Merge requested, please review the PR diff before merging!")
             spawn("gh", ["pr", "diff"])
 
-        pr = get_pull_request_status(args)
         if changes_requested(args, pr):
             print("Changes requested by reviewers, skipping approval of the PR.")
             return Success
 
         # Check again if the PR is still ready for review:
-        if not pull_request_is_ready_for_review(args):
+        if not pull_request_is_ready_for_review(args, pr):
             print("The PR is not ready for review, skipping merging.")
             return Success
 
