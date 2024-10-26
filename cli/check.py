@@ -658,8 +658,6 @@ def get_specs_to_check(args) -> List[str]:
             version_match = None
             multiline_variant = None
             continue
-        if line[0] != "+":
-            continue
 
         check_for_recipe(line, changed_files, recipe, recipes)
         if not recipe[0]:
@@ -671,11 +669,23 @@ def get_specs_to_check(args) -> List[str]:
                 multiline_variant = None
             continue
 
-        # Get the list of new and changed versions from the PR diff:
+        # Track the multi-line versions and variants of the recipe outside of "+" lines:
         version_start = re.search(r"    version\($", line)  # version(
         if version_start:
             next_line_is_version = True
             continue
+        variant_start = re.search(r"    variant\($", line)  # variant(
+        if variant_start:
+            next_line_is_variant = True
+            continue
+
+        if version_match and "    )" in line:
+            default_versions.append(version_match.group(1))
+            version_match = None
+
+        if line[0] != "+":
+            continue
+
         if next_line_is_version:
             version_match = re.search(r'"([^"]+)"', line)
             next_line_is_version = False
@@ -685,9 +695,6 @@ def get_specs_to_check(args) -> List[str]:
             print("Deprecated versions:", deprecated)
             version_match = None
             continue
-        if version_match and "    )" in line:
-            default_versions.append(version_match.group(1))
-            version_match = None
 
         if "with default_args(deprecated=True):" in line:
             default_versions = deprecated
@@ -700,10 +707,6 @@ def get_specs_to_check(args) -> List[str]:
         # Get the list of new or changed variants from the PR diff:
         # TODO: Add support for multi variants/variants with values
         # search for variant( where on its own line, and then search for the variant name.
-        variant_start = re.search(r"    variant\($", line)  # variant(
-        if variant_start:
-            next_line_is_variant = True
-            continue
         variant = re.search(r'    variant\("([^"]+)", ', line)  # variant("name",
         if next_line_is_variant or variant:
             variant = variant or re.search(r'"([^"]+)"', line)
