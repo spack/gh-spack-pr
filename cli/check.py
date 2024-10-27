@@ -669,6 +669,9 @@ def get_specs_to_check(args) -> List[str]:
                 multiline_variant = None
             continue
 
+        if line[0] == "-":  # Skip removed lines when looking for new variants and versions.
+            continue
+
         # Track the multi-line versions and variants of the recipe outside of "+" lines:
         version_start = re.search(r"    version\($", line)  # version(
         if version_start:
