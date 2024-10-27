@@ -1,1 +1,31 @@
-cli/check.py
+#!/usr/bin/env python3
+# pylint: disable=invalid-name
+# Starter script for the spack-pr extension, must follow the naming convention.
+"""Platform-neutral starter to run the spack-pr extension's main script.
+
+This script is a workaround to run the check script from the root directory.
+It adds the cli directory to the path and runs the check script as a module.
+
+Also, it is a workaround for the following issues:
+- GitHub CLI extension scripts need to have the same name as the extension, with a .py extension.
+- A symlink to check/cli.py does not work on Windows.
+- A relative import does not work when the script is run from a different directory.
+- A direct import does not work when the script is run from a different directory.
+
+It uses runpy.run_path to run the check script as a module,
+means that it runs inside the same Python interpreter as the starter,
+but in its own namespace without starting a new subprocess.
+"""
+import runpy
+import sys
+from os import path
+
+dirname = path.dirname(sys.argv[0])
+cli = path.join(dirname, "cli")
+sys.path.insert(0, cli)
+# To return a value to the caller, the main script should use sys.exit() for now.
+# If needed, this starter could be extended to catch SystemExit
+# log the exit value and re-raise it using sys.exit(exitcode),
+# but this is currently not necessary. By raising a custom exception,
+# the check script can also return arbitrary values for debugging to the caller.
+runpy.run_path(path.join(cli, "check.py"), run_name="__main__")
