@@ -853,14 +853,25 @@ def parse_variant_infos(recipe: str) -> Tuple[ExitCode, dict]:
     return Success, variants
 
 
+def recipes_of_specs(specs: Strs) -> Strs:
+    """Get the unique list of recipes from the specs."""
+    recipes = []
+    for spec in specs:
+        match = re.search(r"(\w+)", spec)
+        if match:
+            recipes.append(match.group(1))
+    return list(set(recipes))
+
+
 def expand_specs_to_check_package_versions(specs_to_check, max_versions) -> List[str]:
     """Expand the specs to check by adding the safe versions of the packages."""
-    for spec in specs_to_check.copy():
-        recipe = spec.split("@")[0]
+    for recipe in recipes_of_specs(specs_to_check):
         versions = get_safe_versions(recipe)
-        if versions:
-            specs_to_check.remove(spec)
-            specs_to_check.extend([recipe + "@" + version for version in versions[:max_versions]])
+        if not versions:
+            continue
+        if recipe in specs_to_check:
+            specs_to_check.remove(recipe)
+        specs_to_check.extend([recipe + "@" + version for version in versions[:max_versions]])
 
     return specs_to_check
 
@@ -1311,27 +1322,15 @@ def check_queue_file(args: argparse.Namespace) -> int:
     return Success
 
 
-def recipes_of_specs(specs: Strs) -> Strs:
-    """Get the recipes from the specs."""
-    recipes = []
-    for spec in specs:
-        match = re.search(r"(\w+)", spec)
-        if match:
-            recipes.append(match.group(1))
-    return list(set(recipes))
-
-
 def check_and_build(args: argparse.Namespace) -> ExitCode:
     """Check the PR changes and build the packages."""
-    # Get the specs to check.
-    if args.build:
-        # args.recipes = recipes_of_specs(specs_to_check)
-        # Get the recipes from the PR despite the specs to check.
-        # Sets args.recipes to the recipes of the PR, from --build:
-        get_specs_to_check(args)
+
+    # Set args.recipes from the PR's diff, even if this run should check specific builds
+    # As when making checks in maintainers for the PR to be merged, we need to check all
+    # the recipes changed in the PR:
+    specs_to_check = get_specs_to_check(args)
+    if args.build:  # If the build argument is given, check only the specified builds.
         specs_to_check = args.build.split(",")
-    else:
-        specs_to_check = get_specs_to_check(args)
 
     print("Specs to check:", " ".join(specs_to_check))
 
