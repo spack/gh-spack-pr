@@ -1002,10 +1002,9 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
         if args.yes or input(input_str).lower() != "n":
             raw_report += abbreviated_spec_info(spec, install_log + ".spec")
 
-        report = remove_color_terminal_codes(raw_report)
         print("Writing report to", install_log + ".report")
         with open(install_log + ".report", "w", encoding="utf-8") as report_file:
-            report_file.write(report)
+            report_file.write(raw_report)
 
         kind = "--comment"
         print("Request changes? (else you can add the report as a comment):")
@@ -1016,7 +1015,7 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
             req = input(f"Add it as comment to {args.pull_request_url}:? [y/N] ")
             if req != "y":
                 continue
-        submit_request_for_spec(args, kind, report, spec)
+        submit_request_for_spec(args, kind, raw_report, spec)
         requested_changes_for.append(spec)
 
     if args.verbose:
@@ -1032,15 +1031,17 @@ def submit_request_for_spec(args, kind, report, spec):
     """Submit a request for changes for the spec."""
 
     author = args.pr["author"]["login"]
-    # Create an summary of the failure:
-    summary = f"<details><summary>@{author}, click here to see a build failure on {spec}</summary>"
-    header = "Hello @{author}, the installation of `{spec}` failed in an automated build:"
+    # Kindly ask the author of the PR to check the install failure
+    hello = f"Hello @{author}! I encountered an install failure of {spec}."
+    title = f"{hello} Could you check it?"
+    summary = f"<details><summary>{title}</summary>"
+    msg = f"I am terribly sorry, but my attempt on the installation of `{spec}`"
+    msg += " failed in an automated build.\n\n"
+    msg += " However, but I've got a detailed report for you that may allow you to fix it"
+    msg += " based on the knowledge that you have about these recipes.\n\n"
+    header = f"Hello @{author},\n\n" + msg
     body = f"{summary}<br>\n\n{header}\n\n{report}\n</details>"
-
-    ret = spawn("gh", ["pr", "review", kind, "--body", body], show_command=False)
-    if ret:
-        print("Failed to request changes for", spec)
-        raise ChildProcessError("Failed to request changes for " + spec)
+    review_pr(args, kind, body, spec)
 
 
 def add_compiler_to_specs(specs_to_check, args) -> List[str]:
@@ -1142,6 +1143,9 @@ def parse_args() -> argparse.Namespace:
     )
     argparser.add_argument(
         "-C", "--compiler", help="The compiler to use for building the packages."
+    )
+    argparser.add_argument(
+        "--debug", type=str, help="Show debug output, use given PR URL for testing"
     )
     argparser.add_argument(
         "-D",
@@ -1303,6 +1307,9 @@ def check_pr_of_currently_checked_out_branch(args: argparse.Namespace) -> ExitCo
     # Get the number of the current PR:
     # We use it for any further API calls so we don't act on the wrong PR.
     args.pull_request = args.pull_request_url.split("/")[-1]
+    # if args.debug:
+    #     args.pull_request = args.debug
+    #     print("Debugging with PR:", args.pull_request)
 
     args.pr = get_pull_request_status(args)
     if not pull_request_is_ready_for_review(args, args.pr):
@@ -1380,8 +1387,8 @@ def check_and_build(args: argparse.Namespace) -> ExitCode:
     return build_and_act_on_results(args, installed, specs_to_check)
 
 
-def head_of_build_log(failed_spec: str, line: str) -> str:
-    """Return the head of the build log."""
+def return_build_log_as_far_as_feasible(failed_spec: str, line: str) -> str:
+    """Return the build log, either the head / the tail of the log or the whole log."""
 
     build_log = line.strip()
     if not os.path.exists(build_log):
@@ -1398,13 +1405,16 @@ def head_of_build_log(failed_spec: str, line: str) -> str:
         "compiler: lib/spack/env",
         "Detecting C compiler",
     ]
+    max_lines = 200
+    title = f"full build log</b> for {failed_spec}"
     with open(build_log, "r", encoding="utf-8") as build_log_file:
-        log = f"<details><summary>Head of the raw log for {failed_spec}</summary>\n\n```py\n"
+        log = ""
         for i, log_line in enumerate(build_log_file):
-            if i <= 2 or "'-G'" in log_line:
+            if i == 2 and "'-G'" in log_line:
                 continue  # Skip the long cmake command line for now
-            if i > 42:
+            if i > max_lines:
                 log += "...\n"
+                title = f"head of the build log</b> for {failed_spec}"
                 break
             if not log_line or log_line.isspace():
                 continue
@@ -1415,11 +1425,12 @@ def head_of_build_log(failed_spec: str, line: str) -> str:
                 log_line = log_line.replace("'", "")
             log += log_line
     log += "\n```\n</details>\n\n"
-    return log
+    header = f"<details><summary><b>Click here to expand the {title}</summary>\n\n```py\n"
+    return header + log
 
 
-def remove_long_strings(data: str) -> str:
-    """Remove long strings in the output."""
+def shorten_long_path_strings(data: str) -> str:
+    """Shorten long path strings in the output."""
 
     cwd = f"{os.getcwd()}/"
     # remove '-DCMAKE_.*:STRING=<any text>' from the output:
@@ -1462,7 +1473,8 @@ def failure_summary(fails: List[Tuple[str, str]], **kwargs) -> str:
             fails_summary += f"- `{failed_spec}`\n"
 
     for failed_spec, log_file in fails:
-        fails_summary += f"<details><summary>Failed spec: {failed_spec}</summary>\n\n"
+        title = "Click here to drill down to the logs from building the failed spec:"
+        fails_summary += f"<details><summary>{title} {failed_spec}</summary>\n\n"
         fails_summary += f"### `{failed_spec}`:\n"
         errors = ""
         with open(log_file, "r", encoding="utf-8") as log:
@@ -1475,7 +1487,7 @@ def failure_summary(fails: List[Tuple[str, str]], **kwargs) -> str:
                     next_line_is_build_log = True
                     continue
                 if next_line_is_build_log:
-                    fails_summary += head_of_build_log(failed_spec, line)
+                    fails_summary += return_build_log_as_far_as_feasible(failed_spec, line)
                     break
 
                 if add_remaining_lines:
@@ -1885,10 +1897,8 @@ def create_change_request(args: argparse.Namespace, build_results: str) -> ExitC
             "If there is no (longer) an issue, please change the PR to 'Ready for review' again."
         )
 
-    # exitcode = review_pr(args, "--request-changes", build_results)
-    exitcode = review_pr(args, "--comment", build_results)
-    if exitcode:
-        return exitcode
+    # review_pr(args, "--request-changes", build_results)
+    review_pr(args, "--comment", build_results, args.pull_request_url)
 
     error = spawn("gh", ["pr", "edit", args.pull_request, "--add-label", "changes-requested"])
     if error:
@@ -1900,7 +1910,7 @@ def create_change_request(args: argparse.Namespace, build_results: str) -> ExitC
     # return Success
 
 
-def review_pr(args: argparse.Namespace, kind: str, build_results: str) -> ExitCode:
+def review_pr(args: argparse.Namespace, kind: str, body: str, spec: str) -> None:
     """Submit a review to the PR with the build results."""
 
     if args.login:
@@ -1917,14 +1927,22 @@ def review_pr(args: argparse.Namespace, kind: str, build_results: str) -> ExitCo
     time.sleep(1)
 
     # Remove color terminal codes from the output:
-    build_results = remove_color_terminal_codes(build_results)
+    body = remove_color_terminal_codes(body)
+    body = shorten_long_path_strings(body)
+    if args.debug:
+        print("Review body:")
+        args.pull_request_url = args.debug
 
-    cmd = ["pr", "review", args.pull_request, kind, "--body", build_results]
+    # FIXME:
+    # Use the `--body-file` option for the review command to avoid argument length issues.
+    cmd = ["pr", "review", args.pull_request_url, kind, "--body", body]
     time.sleep(1)
     exitcode = spawn("gh", cmd, show_command=False)
+    if exitcode:
+        raise ChildProcessError(f"Failed to {kind[2:]} {spec}:")
+
     print("Link to the PR:", args.pull_request_url)
     time.sleep(1)
-    return exitcode
 
 
 def extract_reviews_by_category(args: argparse.Namespace) -> bool:
@@ -2063,7 +2081,7 @@ def add_results_as_comment(args: argparse.Namespace, results: str, fails: Fails)
         return Success
     # No changed requested: We can freely comment on the PR.
     if args.yes or input("Add the build results as a comment to the PR [y/n]: ") == "y":
-        return review_pr(args, "--comment", results)
+        review_pr(args, "--comment", results, args.pull_request_url)
     return Success
 
 
@@ -2088,7 +2106,7 @@ def review_and_merge(args: argparse.Namespace, build_results: str) -> ExitCode:
             print("Changes requested by reviewers, skipping approval of the PR.")
             # Ask if the build results should be added as a comment to the PR:
             if args.yes or input("Add the build results as a comment to the PR [y/n]: ") == "y":
-                review_pr(args, "--comment", build_results)
+                review_pr(args, "--comment", build_results, args.pull_request_url)
 
             return Success
 
@@ -2099,9 +2117,7 @@ def review_and_merge(args: argparse.Namespace, build_results: str) -> ExitCode:
         target = "approval" if not changes_requested(args, args.pr) else "comment"
         if args.yes or input(f"Submit the build results as an {target} [y/n]: ") == "y":
             option = "--approve" if not changes_requested(args, args.pr) else "--comment"
-            exitcode = review_pr(args, option, build_results)
-            if exitcode:
-                return exitcode
+            review_pr(args, option, build_results, args.pull_request_url)
         else:
             print("Skipping approval of the PR")
     else:
