@@ -41,6 +41,9 @@ commit files: Commit the changed files in the PR diff.
 #   - it can update existing review comments
 #   - it can give review comments at specific lines
 
+# - Add support for installing the packages in a container, sandbox, or remote host.
+#   Use pxssh module of pexpect: https://pexpect.readthedocs.io/en/stable/api/pxssh.html
+
 # - Limit the amount of builds: For some PRs, the amount of versions*variants can be >300.
 import argparse
 import json
@@ -448,10 +451,14 @@ def setup_github_cli_dashboard(build_tools_dir) -> ExitCode:
     return Success
 
 
-def bootstrap_spack() -> ExitCode:
-    """Bootstrap the host and Spack"""
-    if install_spack_dependencies():
-        return True
+def setup_spack_pr_extension() -> ExitCode:
+    """Setup the GitHub CL and the Spack repo for using the Spack PR extension."""
+
+    for setup_function in (install_spack_dependencies, authenticate_github_cli):
+        exitcode = setup_function()
+        if exitcode:
+            return exitcode
+
     # Check if the Spack repository is cloned.
     if not os.path.exists("bin/spack") and os.path.isdir("spack"):
         os.chdir("spack")
@@ -524,8 +531,8 @@ def setup_github_cli_fzf_aliases() -> ExitCode:
         updated_recently,
     ]
     gh_set_checkout_alias("co-review-needed", query_review_needed)
-    gh_set_checkout_alias("co-review-title-add", query_review_needed + ["in:title add"])
-    gh_set_checkout_alias("co-review-title-new", query_review_needed + ["in:title new"])
+    gh_set_checkout_alias("co-new-version", query_review_needed + ["-label:new-version"])
+    gh_set_checkout_alias("co-new-variant", query_review_needed + ["-label:new-variant"])
     return Success
 
 
@@ -1113,12 +1120,6 @@ def parse_args() -> argparse.Namespace:
         "-a", "--approve", action="store_true", help="Approve the PR on success."
     )
     argparser.add_argument(
-        "-B",
-        "--bootstrap",
-        action="store_true",
-        help="Bootstrap Spack before building the packages.",
-    )
-    argparser.add_argument(
         "-b",
         "--build",
         help="Build the given list of specs.",
@@ -1221,18 +1222,12 @@ def run_commands_for_changed_files(args: argparse.Namespace) -> ExitCode:
     return 1
 
 
-def prepare_github_cli(args: argparse.Namespace) -> int:
+def prepare_github_cli() -> ExitCode:
     """Prepare the GitHub CLI for use."""
-    # TODO:
-    # - Add support for installing the packages in a container, sandbox, or remote host.
-    #   Use pxssh module of pexpect: https://pexpect.readthedocs.io/en/stable/api/pxssh.html
 
     exitcode = authenticate_github_cli()
     if exitcode != Success:
         return exitcode
-
-    if args.bootstrap:
-        return bootstrap_spack()
 
     # Check if the repo has a default remote repository set:
     # It is needed for the gh pr commands to work.
@@ -1261,11 +1256,13 @@ def prepare_github_cli(args: argparse.Namespace) -> int:
 def main(args: argparse.Namespace) -> int:
     """Run the main code for the script using the parsed command line flags"""
 
-    ret = prepare_github_cli(args)
+    ret = prepare_github_cli()
     if ret:
         return ret
 
     if args.command:
+        if args.command == "setup":
+            return setup_spack_pr_extension()
         if not args.subcommand or args.subcommand != "files":
             return 1
         return run_commands_for_changed_files(args)
