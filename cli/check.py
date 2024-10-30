@@ -864,7 +864,7 @@ def recipes_of_specs(specs: Strs) -> Strs:
     """Get the unique list of recipes from the specs."""
     recipes = []
     for spec in specs:
-        match = re.search(r"(\w+)", spec)
+        match = re.search(r"([a-z0-9-]+)", spec)
         if match:
             recipes.append(match.group(1))
     return list(set(recipes))
