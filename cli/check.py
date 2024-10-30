@@ -1125,7 +1125,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
     )
     argparser.add_argument(
-        "-c", "--compiler", help="The compiler to use for building the packages."
+        "-c",
+        "--comment",
+        action="store_true",
+        help="Build the changes in the PR(s) and comment on the build results.",
+    )
+    argparser.add_argument(
+        "-C", "--compiler", help="The compiler to use for building the packages."
     )
     argparser.add_argument(
         "-D",
@@ -1139,6 +1145,12 @@ def parse_args() -> argparse.Namespace:
         "-k",
         "--checkout",
         help="Checkout the PR branch (find it by PR query) to check the changes.",
+        type=str,
+    )
+    argparser.add_argument(
+        "-l",
+        "--login",
+        help="Switch to the given GitHub login before acting on the PR.",
         type=str,
     )
     argparser.add_argument("-m", "--merge", action="store_true", help="Merge the PR on success.")
@@ -1745,6 +1757,9 @@ def build_and_act_on_results(args, installed, specs_to_check):
     if not_yet_reported and args.request_changes:
         return create_change_request(args, body)
 
+    if args.comment:
+        return add_results_as_comment(args, body, failed)
+
     if args.approve or args.merge:
         ret = check_diff_and_commit(args)
         if ret:
@@ -1754,7 +1769,7 @@ def build_and_act_on_results(args, installed, specs_to_check):
         print("Link to the PR:", args.pull_request_url)
         return 1
 
-    return check_approval_and_merge(args, body)
+    return review_and_merge(args, body)
 
 
 def get_pull_request_status(args: argparse.Namespace) -> Dict[str, Any]:
@@ -1867,12 +1882,8 @@ def create_change_request(args: argparse.Namespace, build_results: str) -> ExitC
             "If there is no (longer) an issue, please change the PR to 'Ready for review' again."
         )
 
-    build_results = remove_color_terminal_codes(build_results)
-
-    # spawn("gh", ["issue", "create", "--title", "Fix the failed specs", "--body", build_results])
-    # cmd = ["pr", "review", args.pull_request, "--request-changes", "--body", build_results]
-    cmd = ["pr", "review", args.pull_request, "--comment", "--body", build_results]
-    exitcode = spawn("gh", cmd, show_command=False)
+    # exitcode = review_pr(args, "--request-changes", build_results)
+    exitcode = review_pr(args, "--comment", build_results)
     if exitcode:
         return exitcode
 
@@ -1888,6 +1899,13 @@ def create_change_request(args: argparse.Namespace, build_results: str) -> ExitC
 
 def review_pr(args: argparse.Namespace, kind: str, build_results: str) -> ExitCode:
     """Submit a review to the PR with the build results."""
+
+    if args.login:
+        get_github_user(args)
+        if args.github_user != args.login:
+            spawn("gh", ["auth", "switch", "--user", args.login])
+
+    build_results = remove_color_terminal_codes(build_results)
 
     cmd = ["pr", "review", args.pull_request, kind, "--body", build_results]
     return spawn("gh", cmd, show_command=False)
@@ -2021,7 +2039,19 @@ def print_requested_changes(args: argparse.Namespace) -> bool:
     return False
 
 
-def check_approval_and_merge(args: argparse.Namespace, build_results: str):
+def add_results_as_comment(args: argparse.Namespace, results: str, fails: Fails) -> ExitCode:
+    """Add the build results as a comment to the PR."""
+
+    if not fails and changes_requested(args, args.pr):
+        # Changes requested: Do not comment with on a successful build, but on fails:
+        return Success
+    # No changed requested: We can freely comment on the PR.
+    if args.yes or input("Add the build results as a comment to the PR [y/n]: ") == "y":
+        return review_pr(args, "--comment", results)
+    return Success
+
+
+def review_and_merge(args: argparse.Namespace, build_results: str) -> ExitCode:
     """Check if the PR is/can be approved and merge the PR if all specs passed."""
 
     if args.approve:
