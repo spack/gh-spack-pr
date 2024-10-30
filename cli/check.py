@@ -1899,13 +1899,26 @@ def review_pr(args: argparse.Namespace, kind: str, build_results: str) -> ExitCo
 
     if args.login:
         get_github_user(args)
+        print("Current   GitHub CLI login:", args.github_user)
+        print("Requested GitHub CLI login:", args.login)
         if args.github_user != args.login:
             spawn("gh", ["auth", "switch", "--user", args.login])
 
+    # View the PR to get the latest comments and reviews:
+    spawn("gh", ["pr", "view", args.pull_request])
+    print("Link to the PR:", args.pull_request_url)
+    print("Submitting the result as review comment to the PR:", args.pull_request_url)
+    time.sleep(1)
+
+    # Remove color terminal codes from the output:
     build_results = remove_color_terminal_codes(build_results)
 
     cmd = ["pr", "review", args.pull_request, kind, "--body", build_results]
-    return spawn("gh", cmd, show_command=False)
+    time.sleep(1)
+    exitcode = spawn("gh", cmd, show_command=False)
+    print("Link to the PR:", args.pull_request_url)
+    time.sleep(1)
+    return exitcode
 
 
 def extract_reviews_by_category(args: argparse.Namespace) -> bool:
