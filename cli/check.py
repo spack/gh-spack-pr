@@ -536,30 +536,6 @@ def setup_github_cli_fzf_aliases() -> ExitCode:
     return Success
 
 
-def get_safe_versions(spec):
-    """Find the safe versions of the specs. Parse the output of `bin/spack versions --safe`:
-    bin/spack versions --safe wget
-    ==> Safe versions (already checksummed):
-    master  2.4.1  2.3  2.2  2.1  2.0  1.3
-    """
-    safe_versions = []
-    # FIXME: The spec may contain variants, etc, use a regex to remove them.
-    recipe = spec.split("+")[0]  # Remove variants, and more as they are added to the spec.
-    err, stdout, _ = run(["bin/spack", "versions", "--safe", recipe])
-    if err == 0:
-        for line in stdout.split("\n"):
-            if line.startswith("==> Safe versions"):
-                continue
-            safe_versions.extend(line.split())
-
-    # Remove the versions that should be skipped (development branches often fail to build):
-    for skip_version in ["master", "develop", "main"]:
-        if skip_version in safe_versions:
-            safe_versions.remove(skip_version)
-
-    return safe_versions
-
-
 def find_already_installed(specs_to_check: List[str]) -> Tuple[List[str], List[str]]:
     """List the installed packages."""
     installed = []
@@ -870,17 +846,50 @@ def recipes_of_specs(specs: Strs) -> Strs:
     return list(set(recipes))
 
 
-def expand_specs_to_check_package_versions(specs_to_check, max_versions) -> List[str]:
-    """Expand the specs to check by adding the safe versions of the packages."""
-    for recipe in recipes_of_specs(specs_to_check):
-        versions = get_safe_versions(recipe)
-        if not versions:
-            continue
-        if recipe in specs_to_check:
-            specs_to_check.remove(recipe)
-        specs_to_check.extend([recipe + "@" + version for version in versions[:max_versions]])
+def get_preferred_version(output: str) -> str:
+    """Extract the preferred version of the package"""
 
-    return specs_to_check
+    preferred_group = re.search(r"Preferred version:\s+(\S+)", output)
+    return preferred_group.group(1) if preferred_group else ""
+
+
+def get_safe_versions(output: str) -> List[str]:
+    """Find the not deprecated safe versions of the specs."""
+
+    safe_versions = []
+    version_match = re.search(r"Safe versions:(.*)\n\n", output + "\n\n", re.DOTALL)
+    if version_match:
+        for version_line in version_match.group(1).strip().split("\n\n")[0].split("\n"):
+            safe_versions.append(version_line.split()[0])
+
+    # Remove the versions that should be skipped (development branches often fail to build):
+    for skip_version in ["master", "develop", "main"]:
+        if skip_version in safe_versions:
+            safe_versions.remove(skip_version)
+
+    return safe_versions
+
+
+def expand_specs_to_check_package_versions(specs, max_versions) -> None:
+    """Expand the specs to check by adding [max_versions] safe versions of the packages."""
+
+    print("List of non-deprecated safe versions of the packages:")
+    for recipe in recipes_of_specs(specs):
+        args = ["--no-variants", "--no-dependencies"]
+        exitcode, stdout, stderr = run(["bin/spack", "info", *args, recipe])
+        if exitcode:
+            raise ChildProcessError(f"spack info {recipe} failed: {stderr or stdout}")
+        versions = get_safe_versions(stdout)
+        print(f"{recipe}:", ", ".join(versions))
+        if versions:
+            specs.extend([recipe + "@" + version for version in versions[:max_versions]])
+        # Always add the preferred version to the list of specs to check:
+        versions.append(get_preferred_version(stdout))
+
+    # Remove duplicates from the list of specs to check and update the list:
+    new_specs = list(set(specs))
+    specs.clear()
+    specs.extend(new_specs)
 
 
 def check_all_downloads(specs) -> ExitCode:
@@ -1343,12 +1352,9 @@ def check_and_build(args: argparse.Namespace) -> ExitCode:
 
     print("Specs to check:", " ".join(specs_to_check))
 
-    # Check if the specs have versions and add the versions to the specs to check.
-
+    # Always check the preferred version of the package as well:
     if args.safe_versions:
-        print("Checking for existing safe versions of the packages to build or download")
-        # Limit the number of versions to check to 6.
-        specs_to_check = expand_specs_to_check_package_versions(specs_to_check, args.safe_versions)
+        expand_specs_to_check_package_versions(specs_to_check, args.safe_versions)
 
     specs_to_check = add_compiler_to_specs(specs_to_check, args)
 
