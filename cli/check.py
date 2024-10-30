@@ -836,14 +836,20 @@ def parse_variant_infos(recipe: str) -> Tuple[ExitCode, dict]:
     return Success, variants
 
 
-def recipes_of_specs(specs: Strs) -> Strs:
-    """Get the unique list of recipes from the specs."""
-    recipes = []
+def recipes_of_specs(specs: Strs) -> Dict[str, Strs]:
+    """Get the unique list of recipes from the specs and a dict of recipes to specs."""
+
+    recipe_specs = {}
     for spec in specs:
-        match = re.search(r"([a-z0-9-]+)", spec)
-        if match:
-            recipes.append(match.group(1))
-    return list(set(recipes))
+        spec_match = re.search(r"([a-z0-9-]+)", spec)
+        if spec_match:
+            recipe = spec_match.group(1)
+            if recipe not in recipe_specs:
+                recipe_specs[recipe] = [spec]
+            else:
+                recipe_specs[recipe].append(spec)
+
+    return recipe_specs
 
 
 def get_preferred_version(output: str) -> str:
@@ -870,11 +876,13 @@ def get_safe_versions(output: str) -> List[str]:
     return safe_versions
 
 
-def expand_specs_to_check_package_versions(specs, max_versions) -> None:
-    """Expand the specs to check by adding [max_versions] safe versions of the packages."""
+def add_extra_versions(specs, extraversions) -> None:
+    """Expand the specs to check by adding [max_versions] safe versions from the packages."""
 
     print("List of non-deprecated safe versions of the packages:")
-    for recipe in recipes_of_specs(specs):
+    print("-----------------------------------------------------")
+
+    for recipe, recipe_specs in recipes_of_specs(specs).items():
         args = ["--no-variants", "--no-dependencies"]
         exitcode, stdout, stderr = run(["bin/spack", "info", *args, recipe])
         if exitcode:
@@ -882,7 +890,15 @@ def expand_specs_to_check_package_versions(specs, max_versions) -> None:
         versions = get_safe_versions(stdout)
         print(f"{recipe}:", ", ".join(versions))
         if versions:
-            specs.extend([recipe + "@" + version for version in versions[:max_versions]])
+            versions_already_in_specs = []
+            for version in versions:
+                for spec in recipe_specs:
+                    if "@" + version in spec:
+                        versions_already_in_specs.append(version)
+            for version in versions_already_in_specs:
+                versions.remove(version)
+            extraversions = min(extraversions, len(versions))
+            specs.extend([recipe + "@" + version for version in versions[:extraversions]])
         # Always add the preferred version to the list of specs to check:
         versions.append(get_preferred_version(stdout))
 
@@ -1037,7 +1053,7 @@ def submit_request_for_spec(args, kind, report, spec):
     summary = f"<details><summary>{title}</summary>"
     msg = f"I am terribly sorry, but my attempt on the installation of `{spec}`"
     msg += " failed in an automated build.\n\n"
-    msg += " However, but I've got a detailed report for you that may allow you to fix it"
+    msg += " But I've got a detailed report for you that may allow you to fix it"
     msg += " based on the knowledge that you have about these recipes.\n\n"
     header = f"Hello @{author},\n\n" + msg
     body = f"{summary}<br>\n\n{header}\n\n{report}\n</details>"
@@ -1153,6 +1169,12 @@ def parse_args() -> argparse.Namespace:
         help="Additional dependency specs for the packages.",
     )
     argparser.add_argument(
+        "-e",
+        "--extra-versions",
+        type=int,
+        help="Install additional <versions> safe versions of the packages.",
+    )
+    argparser.add_argument(
         "-f", "--force", action="store_true", help="Force the approval of packages."
     )
     argparser.add_argument(
@@ -1170,12 +1192,6 @@ def parse_args() -> argparse.Namespace:
     argparser.add_argument("-m", "--merge", action="store_true", help="Merge the PR on success.")
     argparser.add_argument(
         "-r", "--request-changes", action="store_true", help="Request changes on failure."
-    )
-    argparser.add_argument(
-        "-s",
-        "--safe-versions",
-        type=int,
-        help="Install <versions> safe versions of the packages.",
     )
     argparser.add_argument(
         "-d", "--download", action="store_true", help="Download and checksum check only"
@@ -1360,8 +1376,8 @@ def check_and_build(args: argparse.Namespace) -> ExitCode:
     print("Specs to check:", " ".join(specs_to_check))
 
     # Always check the preferred version of the package as well:
-    if args.safe_versions:
-        expand_specs_to_check_package_versions(specs_to_check, args.safe_versions)
+    if args.extra_versions:
+        add_extra_versions(specs_to_check, args.extra_versions)
 
     specs_to_check = add_compiler_to_specs(specs_to_check, args)
 
@@ -1384,6 +1400,7 @@ def check_and_build(args: argparse.Namespace) -> ExitCode:
     for already_installed_pkg in installed:
         specs_to_check.remove(already_installed_pkg)
 
+    print("Remaining specs to check:", " ".join(specs_to_check))
     return build_and_act_on_results(args, installed, specs_to_check)
 
 
