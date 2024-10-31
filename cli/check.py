@@ -1390,6 +1390,20 @@ def check_queue_file(args: argparse.Namespace) -> int:
     return Success
 
 
+def get_requested_specs_from_pr(args):
+    """Get the specs requested in the PR comments."""
+
+    requested_specs = []
+    for reviews in args.pr["reviews"] + args.pr["comments"]:
+        body = reviews["body"]
+        match = re.search(r"--fail-fast ([^ `]+)", body, re.DOTALL)
+        if match:
+            requested_specs.append(match.group(1))
+            print(match.group(1))
+
+    return list(set(requested_specs))
+
+
 def check_and_build(args: argparse.Namespace) -> ExitCode:
     """Check the PR changes and build the packages."""
 
@@ -1413,6 +1427,19 @@ def check_and_build(args: argparse.Namespace) -> ExitCode:
     # and the download is done by the install command anyway.
     if args.download:
         return check_all_downloads(specs_to_check)
+
+    requested_specs_from_pr = get_requested_specs_from_pr(args)
+    if requested_specs_from_pr:
+        print("Checking Specs requested in the PR comments to be uninstalled:")
+        installed, findings = find_already_installed(requested_specs_from_pr)
+        print("These specs are already installed:")
+        if installed:
+            print("These specs that are requested in the PR are already installed:")
+            print("\n".join(findings))
+            if args.uninstall:
+                if args.yes or input("Uninstall these requested specs? [y/n]: ").lower() == "y":
+                    for spec in installed:
+                        spack_uninstall_packages([spec])
 
     # Check if specs are already installed and ask if they should be uninstalled.
     # If the user agrees, uninstall the packages.
@@ -1836,7 +1863,7 @@ def get_pull_request_status(args: argparse.Namespace) -> Dict[str, Any]:
     if not args.pull_request:
         assert False, "No pull request number given."
 
-    fields = "author,state,reviews,latestReviews,labels"
+    fields = "author,state,comments,reviews,latestReviews,labels"
     err, stdout = getstatusoutput(f"gh pr view {args.pull_request} --json {fields}")
     if err:
         raise ChildProcessError(f"Failed to get the PR status for {fields}:\n" + stdout)
