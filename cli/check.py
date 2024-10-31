@@ -841,6 +841,7 @@ def recipe_specs_and_versions(specs: Strs) -> Tuple[Dict[str, Strs], Dict[str, S
     recipe_specs = {}
     recipe_versions = {}
     for spec in specs:
+        # The the recipe name may be followed by space, version, variant or even compiler:
         spec_match = re.search(r"([a-z0-9-]+)", spec)
         if spec_match:
             recipe = spec_match.group(1)
@@ -849,13 +850,16 @@ def recipe_specs_and_versions(specs: Strs) -> Tuple[Dict[str, Strs], Dict[str, S
             else:
                 recipe_specs[recipe].append(spec)
             # Get the version:
-            version_match = re.search(r"@([a-z0-9.-]+)", spec)
-            if version_match:
-                version = version_match.group(1)
-                if recipe not in recipe_versions:
-                    recipe_versions[recipe] = [version]
-                else:
-                    recipe_versions[recipe].append(version)
+            for pattern in (r"@=([a-zA-Z0-9.-]+)", r"@([a-zA-Z0-9.-]+)"):
+                version_match = re.search(pattern, spec)
+                if version_match:
+                    version = version_match.group(1)
+                    print("Version:", version)
+                    if recipe not in recipe_versions:
+                        recipe_versions[recipe] = [version]
+                    else:
+                        recipe_versions[recipe].append(version)
+                    break
 
     return recipe_specs, recipe_versions
 
@@ -890,7 +894,6 @@ def add_extra_versions(specs, extraversions) -> None:
     print("List of non-deprecated safe versions of the packages:")
     print("-----------------------------------------------------")
     recipes, spec_versions = recipe_specs_and_versions(specs)
-
     for recipe, _ in recipes.items():
         args = ["--no-variants", "--no-dependencies"]
         exitcode, stdout, stderr = run(["bin/spack", "info", *args, recipe])
