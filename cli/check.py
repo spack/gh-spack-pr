@@ -1066,7 +1066,6 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
 def submit_request_for_spec(args, kind, report, spec):
     """Submit a request for changes for the spec."""
 
-    public_report = shorten_long_path_strings(report)
     author = args.pr["author"]["login"]
     # Kindly ask the author of the PR to check the install failure
     hello = f"Hello @{author}! I encountered an install failure of {spec}."
@@ -1077,7 +1076,7 @@ def submit_request_for_spec(args, kind, report, spec):
     msg += " But I've got a detailed report for you that may allow you to fix it"
     msg += " based on the knowledge that you have about these recipes.\n\n"
     header = f"Hello @{author},\n\n" + msg
-    body = f"{summary}<br>\n\n{header}\n\n{public_report}\n</details>"
+    body = f"{summary}<br>\n\n{header}\n\n{report}\n</details>"
     review_pr(args, kind, body, spec)
 
 
@@ -1493,7 +1492,7 @@ def return_build_log_as_far_as_feasible(failed_spec: str, line: str) -> str:
                     continue
             if log_line.startswith("    '"):
                 log_line = log_line.replace("'", "")
-            log += log_line
+            log += shorten_long_path_strings(log_line)
     log += "\n```\n</details>\n\n"
     header = f"<details><summary><b>Click here to expand the {title}</summary>\n\n```py\n"
     return header + log
@@ -1528,7 +1527,8 @@ def abbreviated_spec_info(spec: str, spec_log_file: str) -> str:
     with open(spec_log_file + ".spec", encoding="utf-8", errors="ignore") as spec_log:
         spec_report = filter_spec_data(spec_log.read())
 
-    report = f"\n\n<details><summary>Expand the spec output `spack spec {spec}`</summary>"
+    title = 'Click here to expand the output of: "spack spec {spec}"'
+    report = f"\n\n<details><summary>{title}</summary>"
     return report + "\n\n```yaml\n" + spec_report + "\n```\n\n</details>\n\n"
 
 
@@ -1561,7 +1561,7 @@ def failure_summary(fails: List[Tuple[str, str]], **kwargs) -> str:
                     break
 
                 if add_remaining_lines:
-                    line = re.sub("'-DCMAKE_.*:STRING=.*'", "", line)
+                    line = shorten_long_path_strings(line)
                     if line.startswith("    '"):
                         line = line.replace("'", "")
                     errors += line
@@ -1578,8 +1578,8 @@ def failure_summary(fails: List[Tuple[str, str]], **kwargs) -> str:
                 ]
                 for marker in error_markers:
                     if marker in line:
-                        errors += previous_line
-                        errors += line
+                        errors += shorten_long_path_strings(previous_line)
+                        errors += shorten_long_path_strings(line)
                         previous_line = ""
                         add_remaining_lines = 2
                         break
@@ -1686,7 +1686,7 @@ def spack_find_summary(spack_find_output: str) -> List[str]:
 def generate_build_results(installed: Strs, passed: Strs, fails: Fails, about_build_host) -> str:
     """Generate a report using GitHub markdown format for cut-and-paste into the PR comment."""
 
-    base = ":information_source: `spack install` on the changed recipes of this PR was "
+    base = ":thumbsup::information_source: `spack install` on the changed recipes of this PR was "
     stat = "successful" if not fails else "not successful"
     head = f"{base}{stat}[^1]{about_build_host}!"
     clk = f"Click here for a summary of the {stat} builds."
