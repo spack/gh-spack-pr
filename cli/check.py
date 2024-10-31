@@ -780,7 +780,7 @@ def add_recipe_variant_version(
             # and remove the default variants from the recipe.
             recipe_with_variants = merge_variants(changed_recipe, variant, default_variants)
             for version in new_versions:
-                specs.append(recipe_with_variants + "@" + version)
+                specs.append(recipe_with_variants + "@=" + version)
 
     elif new_variants:
         # Add the recipe with the default variants disabled (that are true) to the specs to check:
@@ -793,7 +793,7 @@ def add_recipe_variant_version(
 
     elif new_versions:
         for version in new_versions:
-            specs.append(changed_recipe[0] + "@" + version)
+            specs.append(changed_recipe[0] + "@=" + version)
     else:
         if variants:
             specs.extend([changed_recipe[0] + default_variants_disable, changed_recipe[0]])
@@ -835,10 +835,11 @@ def parse_variant_infos(recipe: str) -> Tuple[ExitCode, dict]:
     return Success, variants
 
 
-def recipes_of_specs(specs: Strs) -> Dict[str, Strs]:
+def recipe_specs_and_versions(specs: Strs) -> Tuple[Dict[str, Strs], Dict[str, Strs]]:
     """Get the unique list of recipes from the specs and a dict of recipes to specs."""
 
     recipe_specs = {}
+    recipe_versions = {}
     for spec in specs:
         spec_match = re.search(r"([a-z0-9-]+)", spec)
         if spec_match:
@@ -847,8 +848,16 @@ def recipes_of_specs(specs: Strs) -> Dict[str, Strs]:
                 recipe_specs[recipe] = [spec]
             else:
                 recipe_specs[recipe].append(spec)
+            # Get the version:
+            version_match = re.search(r"@([a-z0-9.-]+)", spec)
+            if version_match:
+                version = version_match.group(1)
+                if recipe not in recipe_versions:
+                    recipe_versions[recipe] = [version]
+                else:
+                    recipe_versions[recipe].append(version)
 
-    return recipe_specs
+    return recipe_specs, recipe_versions
 
 
 def get_preferred_version(output: str) -> str:
@@ -880,26 +889,38 @@ def add_extra_versions(specs, extraversions) -> None:
 
     print("List of non-deprecated safe versions of the packages:")
     print("-----------------------------------------------------")
+    recipes, spec_versions = recipe_specs_and_versions(specs)
 
-    for recipe, recipe_specs in recipes_of_specs(specs).items():
+    for recipe, _ in recipes.items():
         args = ["--no-variants", "--no-dependencies"]
         exitcode, stdout, stderr = run(["bin/spack", "info", *args, recipe])
         if exitcode:
             raise ChildProcessError(f"spack info {recipe} failed: {stderr or stdout}")
+
         versions = get_safe_versions(stdout)
         print(f"{recipe}:", ", ".join(versions))
+
+        # If the preferred version is not one of the specs, add it to the list of specs:
+        preferred_version = get_preferred_version(stdout)
+        if preferred_version not in spec_versions.get(recipe, []):
+            print(f"Add: {recipe}@{preferred_version} (preferred version)")
+            specs.append(recipe + "@=" + preferred_version)
+            if recipe not in spec_versions:
+                spec_versions[recipe] = [preferred_version]
+            else:
+                spec_versions[recipe].append(preferred_version)
+            if recipe in specs:
+                specs.remove(recipe)
+
         if versions:
-            versions_already_in_specs = []
-            for version in versions:
-                for spec in recipe_specs:
-                    if "@" + version in spec:
-                        versions_already_in_specs.append(version)
+            versions_already_in_specs = set(versions) & set(spec_versions.get(recipe, []))
             for version in versions_already_in_specs:
                 versions.remove(version)
             extraversions = min(extraversions, len(versions))
-            specs.extend([recipe + "@" + version for version in versions[:extraversions]])
-        # Always add the preferred version to the list of specs to check:
-        versions.append(get_preferred_version(stdout))
+            if extraversions:
+                add = [recipe + "@=" + version for version in versions[:extraversions]]
+                print(f"Add: {', '.join(add)} (extra versions)")
+                specs.extend(add)
 
     # Remove duplicates from the list of specs to check and update the list:
     new_specs = list(set(specs))
