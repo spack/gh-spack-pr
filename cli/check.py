@@ -388,15 +388,15 @@ def gh_cli_auth_info() -> Tuple[ExitCode, str]:
 def get_github_user(args: argparse.Namespace) -> str:
     """Get the GitHub user name."""
 
-    exitcode, out = gh_cli_auth_info()
+    exitcode, stdout = gh_cli_auth_info()
     if exitcode:
         return ""
     # Extract "user" from "Logged in to github.com as user ("config")"
-    user_match = re.search(r"Logged in to github.com (\w+) (\w+)", out)
-    if not user_match:
+    args.github_users = re.findall(r"Logged in to github.com \w+ ([a-zA-Z0-9-]+)", stdout)
+    if not args.github_users:
         print("Failed to get the GitHub user name.")
         return ""
-    args.github_user = user_match.group(2)
+    args.github_user = args.github_users[0]
     return args.github_user
 
 
@@ -1296,6 +1296,12 @@ def main(args: argparse.Namespace) -> int:
             return 1
         return run_commands_for_changed_files(args)
 
+    get_github_user(args)
+    if args.login and args.login not in args.github_users:
+        print(f"User {args.login} is not a currently authorized GitHub user.")
+        print("Currently authorized users are:", " ".join(args.github_users))
+        return 1
+
     if args.queue:
         return check_queue_file(args)
 
@@ -1727,7 +1733,8 @@ def disclaimer_for_maintainers(args: argparse.Namespace) -> str:
         need_review_from.remove(args.pr["author"]["login"])
     # Don't ask myself to review the PR:
     if args.github_user in need_review_from:
-        need_review_from.remove(args.github_user)
+        for user in args.github_users:
+            need_review_from.remove(user)
     # Don't ask maintainers that already reviewed the PR to review it again:
     reviewers = get_reviewers(args.pr, "APPROVED") + get_reviewers(args.pr, "CHANGES_REQUESTED")
     to_review = [maintainer for maintainer in need_review_from if maintainer not in reviewers]
@@ -1869,12 +1876,8 @@ def is_approved_or_changes_requested_by_me(args: argparse.Namespace, pr: Pr) -> 
     """Check if the PR is already approved by me."""
 
     approvers, requesters = print_reviewers(pr)
-    github_user = get_github_user(args)
-    if not github_user:
-        print("Failed to get the GitHub user.")
-        raise ConnectionError("Failed to get the GitHub user.")
-
-    return github_user in approvers or github_user in requesters
+    users = set(args.github_users)
+    return bool(set(approvers) or users & set(requesters))
 
 
 def pull_request_is_ready_for_review(args: argparse.Namespace, pr: Pr) -> bool:
@@ -2019,13 +2022,16 @@ def approve_shall_be_skipped(args: argparse.Namespace) -> bool:
         args.last_possible_request = review
         author = review["author"]["login"]
         if review == args.latest_review:
-            who = "Unprivileged Reviewer"
+            who = "Reviewer"
         else:
             who = "Maintainer" if author in args.maintainers else "Member"
         if review.get("state") == "CHANGES_REQUESTED":
             print(f"{who} {author} requested changes:")
             print(review["body"])
             args.requested_changes = review
+            # If his is a change request by me, do not count this as not ready for review:
+            if author in args.github_users or args.force:
+                return False
             return True
         if review == args.latest_request_comment:
             print(f"It looks like {who} {author} asked for changes:")
