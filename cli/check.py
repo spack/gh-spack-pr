@@ -1883,7 +1883,7 @@ def get_reviewers(pr: Dict[str, Any], state: str) -> List[str]:
     """Get the list of approvers of the PR with the given state."""
 
     approvers = []
-    for review in pr.get("reviews", []):
+    for review in pr.get("latestReviews", []):
         if review["state"] == state:
             approvers.append(review["author"]["login"])
 
@@ -1927,7 +1927,7 @@ def is_approved_or_changes_requested_by_me(args: argparse.Namespace, pr: Pr) -> 
 
     approvers, requesters = print_reviewers(pr)
     users = set(args.github_users)
-    return bool(set(approvers) or users & set(requesters))
+    return bool(users & set(approvers) or users & set(requesters))
 
 
 def pull_request_is_ready_for_review(args: argparse.Namespace, pr: Pr) -> bool:
