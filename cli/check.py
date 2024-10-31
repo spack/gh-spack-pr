@@ -542,7 +542,6 @@ def find_already_installed(specs_to_check: List[str]) -> Tuple[List[str], List[s
     findings = []
 
     for spec in specs_to_check:
-        print(f"Checking if {spec} is already installed:")
         err, stdout, _ = run(
             ["bin/spack", "find", "--no-groups", "--show-full-compiler", "-v", "-I", spec]
         )
@@ -1046,6 +1045,7 @@ def spack_install(specs: Strs, args: argparse.Namespace) -> Tuple[Passes, Fails,
 def submit_request_for_spec(args, kind, report, spec):
     """Submit a request for changes for the spec."""
 
+    public_report = shorten_long_path_strings(report)
     author = args.pr["author"]["login"]
     # Kindly ask the author of the PR to check the install failure
     hello = f"Hello @{author}! I encountered an install failure of {spec}."
@@ -1056,7 +1056,7 @@ def submit_request_for_spec(args, kind, report, spec):
     msg += " But I've got a detailed report for you that may allow you to fix it"
     msg += " based on the knowledge that you have about these recipes.\n\n"
     header = f"Hello @{author},\n\n" + msg
-    body = f"{summary}<br>\n\n{header}\n\n{report}\n</details>"
+    body = f"{summary}<br>\n\n{header}\n\n{public_report}\n</details>"
     review_pr(args, kind, body, spec)
 
 
@@ -1329,11 +1329,11 @@ def check_pr_of_currently_checked_out_branch(args: argparse.Namespace) -> ExitCo
     # Get the number of the current PR:
     # We use it for any further API calls so we don't act on the wrong PR.
     args.pull_request = args.pull_request_url.split("/")[-1]
-    # if args.debug:
-    #     args.pull_request = args.debug
-    #     print("Debugging with PR:", args.pull_request)
 
     args.pr = get_pull_request_status(args)
+    if is_closed_or_merged(args.pr):
+        print("The PR is already closed or merged.")
+        return 1
     if not pull_request_is_ready_for_review(args, args.pr):
         # If there is no PR or the PR is not ready for review, don't approve or merge:
         if args.approve or args.merge:
@@ -1394,10 +1394,9 @@ def check_and_build(args: argparse.Namespace) -> ExitCode:
         return check_all_downloads(specs_to_check)
 
     # Check if specs are already installed and ask if they should be uninstalled.
-    installed, findings = find_already_installed(specs_to_check)
+    # If the user agrees, uninstall the packages.
+    installed, _ = find_already_installed(specs_to_check)
     if installed:
-        print("These specs are already installed:")
-        print("\n".join(findings))
         if args.uninstall:
             if args.yes or input("Uninstall them? [y/n]: ").lower() == "y":
                 spack_uninstall_packages(installed)
@@ -1758,7 +1757,7 @@ def disclaimer_for_maintainers(args: argparse.Namespace) -> str:
         f"</summary><br>👍 Hello {mention_maintainers(to_review)}!<br><br>\n\n"
         "- We would like to ask you if you could review this PR within 5 days.\n"
         "- If the PR is not reviewed within 5 days, the PR can be approved and merged by members.\n"
-        "- Please use 👍, Approve, LGTM or Request the comment so we can act accordingly.\n"
+        "- Please use 👍, Approve, LGTM or Request in the comment so we can act accordingly.\n"
         "- If you like to review but need more time, please add a comment to the PR.\n"
         "- If you have questions (or would like to be removed as maintainer), please let us know.\n"
         "\n"
@@ -1948,7 +1947,6 @@ def review_pr(args: argparse.Namespace, kind: str, body: str, spec: str) -> None
 
     # Remove color terminal codes from the output:
     body = remove_color_terminal_codes(body)
-    body = shorten_long_path_strings(body)
     if args.debug:
         print("Review body:")
         args.pull_request_url = args.debug
