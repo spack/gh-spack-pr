@@ -1,5 +1,12 @@
 # ✨ GitHub CLI extension `spack-pr`
 
+## 🌅 Proof of concept for complimenting CI with building changed packages
+
+- Exclusively aimed at building changed recipes (and related packages, e.g. dependents)
+- Most specifically aimed at packages labelled by @spackbot with `new-package` or `new-variant`.
+
+For an introduction to the proof of concept see the specific README: [cli/README.md](cli/README.md)
+
 ## 🌅 Introduction on using the GitHub CLI (`gh`)
 
 GitHub has a public API that you can use to work with pull requests.
