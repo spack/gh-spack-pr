@@ -677,7 +677,6 @@ def get_specs_to_check(args) -> List[str]:
             continue
         if "        deprecated=True," in line and version_match:
             deprecated.append(version_match.group(1))
-            print("Deprecated versions:", deprecated)
             version_match = None
             continue
 
@@ -743,9 +742,14 @@ def add_recipe_variant_version(
 
     variants: Dict[str, str] = {}
     if new_variants:
-        ret, variants = parse_variant_infos(changed_recipe[0])
+        ret, variants, conditional_variants = parse_variant_infos(changed_recipe[0])
         if ret:
             print("Error getting variants of", changed_recipe[0])
+
+        # Remove the conditional variants from the list of new variants to check:
+        for conditional_variant in conditional_variants:
+            if conditional_variant in new_variants:
+                new_variants.remove(conditional_variant)
 
     # Add the recipe with the default variants disabled (that are true) to the specs to check:
     # If the recipe has no variants, add the recipe without variants.
@@ -813,26 +817,39 @@ def add_recipe_variant_version(
     changed_recipe[0] = ""
 
 
-def parse_variant_infos(recipe: str) -> Tuple[ExitCode, dict]:
+def parse_variant_infos(recipe: str) -> Tuple[ExitCode, dict, dict]:
     """Parse the variants of a recipe and return them as a dictionary."""
 
     # run spack info --variants-by-name <recipe> to get the variants and their default values
     # Note: Slightly older versions of spack do not have this and there are PRs from them:
-    ret, stdout, stderr = run(["bin/spack", "info", "--variants-by-name", recipe])
+    ret, stdout, stderr = run(["bin/spack", "info", recipe])
     if ret:
         print(stderr or stdout)
-        return ret, {}
+        return ret, {}, {}
     # The format of the Variants is:
     # Variants:
     #     adios [false]               false, true
     # Extract the variants and their default values from the output:
     variants = {}
+    conditional_variants = {}
+    conditional_variants_found = False
     for line in stdout.split("\n"):
-        variant = re.search(r"(\w+) \[(\w+)\]", line)
-        if variant:
-            variants[variant.group(1)] = variant.group(2)
+        # Stop at lines that start with "when" as those depend on other conditions:
+        if line.startswith("    when"):
+            conditional_variants_found = True
 
-    return Success, variants
+        # Extract the variant and its default value from the line:
+        variant = re.search(r"(\w+) \[(\w+)\]", line)
+        if variant and variant.group(2) in ("true", "false"):
+            if not conditional_variants_found:
+                variants[variant.group(1)] = variant.group(2)
+            else:
+                conditional_variants[variant.group(1)] = variant.group(2)
+
+    print("Boolean Variants:", ", ".join(variants.keys()))
+    print("Boolean Variants (dependent on conditions):", ", ".join(conditional_variants.keys()))
+
+    return Success, variants, conditional_variants
 
 
 def recipe_specs_and_versions(specs: Strs) -> Tuple[Dict[str, Strs], Dict[str, Strs]]:
