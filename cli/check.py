@@ -2205,7 +2205,7 @@ def review_and_merge(args: argparse.Namespace, build_results: str) -> ExitCode:
         if changes_requested(args, args.pr):
             print("Changes requested by reviewers, skipping approval of the PR.")
             # Ask if the build results should be added as a comment to the PR:
-            if args.yes or input("Add the build results as a comment to the PR [y/n]: ") == "y":
+            if not args.yes and input("Add results only as a comment to the PR? [y/n]: ") == "y":
                 review_pr(args, "--comment", build_results, args.pull_request_url)
 
             return Success
