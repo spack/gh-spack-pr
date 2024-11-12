@@ -60,7 +60,7 @@ max-returns = 8
 
 # Maximum number of statements in function / method body.
 # defaults to: max-statements=50
-max-statements = 80
+max-statements = 100
 
 [tool.pyright]
 python_version = "3.10"

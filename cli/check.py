@@ -688,6 +688,12 @@ def get_specs_to_check(args) -> List[str]:
             default_versions.append(version.group(1))
             continue
 
+        # Get the variant from self.define_from_variant("CMAKE_VAR", "variant"):
+        variant = re.search(r'self.define_from_variant\("([^"]+)", "([^"]+)"', line)
+        if variant:
+            new_variants.append(variant.group(2))
+            continue
+
         # Get the list of new or changed variants from the PR diff:
         # TODO: Add support for multi variants/variants with values
         # search for variant( where on its own line, and then search for the variant name.
