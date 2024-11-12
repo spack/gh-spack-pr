@@ -1777,7 +1777,11 @@ def mention_maintainers(maintainers: Strs) -> str:
         skip_mention = ["tgamblin", "adamjstewart"]
         maintainers = [maintainer for maintainer in maintainers if maintainer not in skip_mention]
 
-    return "@" + " and ".join(", @".join(maintainers).rsplit(", ", 1))
+        skip_mention = ["tgamblin", "adamjstewart", "haampie"]
+        maintainers = [maintainer for maintainer in maintainers if maintainer not in skip_mention]
+
+    maintainer = f" (maintainer{'s' if len(maintainers) > 1 else ''})"
+    return "@" + " and ".join(", @".join(maintainers).rsplit(", ", 1)) + maintainer
 
 
 def generated_report_for_maintainers(args, body):
@@ -1821,15 +1825,12 @@ def disclaimer_for_maintainers(args: argparse.Namespace) -> str:
     if not to_review:
         return ""
     return (
-        "<details><summary>Click here for a disclaimer for the maintainers of the recipes\n\n"
-        f"</summary><br>👍 Hello {mention_maintainers(to_review)}!<br><br>\n\n"
-        "- We would like to ask you if you could review this PR within 5 days.\n"
-        "- If the PR is not reviewed within 5 days, the PR can be approved and merged by members.\n"
-        "- Please use 👍, Approve, LGTM or Request in the comment so we can act accordingly.\n"
+        f"<details><summary>Notes for {mention_maintainers(to_review)}</summary>\n\n"
+        "This is not official, it is just based on what I know:\n"
         "- If you like to review but need more time, please add a comment to the PR.\n"
-        "- If you have questions (or would like to be removed as maintainer), please let us know.\n"
+        "- If you review, you can add 👍, Approve, LGTM or Request in the comment.\n"
+        "- If you have questions (or to be removed as maintainer), please let me know.\n"
         "\n"
-        "Thank you for your time and effort!<br>\n"
         "You can also join the Spack Slack channel for more information and have a chat:\n"
         "https://spackpm.slack.com → #pull-requests."
         f" Thank you and best regards, @{args.github_user}</details>\n\n"
