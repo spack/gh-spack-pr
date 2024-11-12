@@ -1276,7 +1276,11 @@ def run_commands_for_changed_files(args: argparse.Namespace) -> ExitCode:
 
     if args.command == "edit":
         editor = os.environ.get("EDITOR", "vim")
-        return spawn(editor, args.changed_files)
+        code = spawn(editor, args.changed_files)
+        if code:
+            print("Editor failed with exit code:", ret)
+            return ret
+        return spawn("black", args.changed_files)
 
     if args.command == "style":
         # Check if black and isort are installed and use them to format the files:
