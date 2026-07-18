@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+# pylint: disable=invalid-name,wrong-import-position
+"""Platform-neutral starter for the spack-pr GitHub CLI extension."""
+
+import sys
+from os import path
+
+# append cli directory to sys.path so that the extension can be run from any location
+sys.path.insert(0, path.join(path.abspath(path.dirname(__file__)), "cli"))
+
+from spack_pr_review.cli import main
+
+sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,90 @@
+#
+# This is the configuration file prek or pre-commit for this repository:
+# pre-commit: https://pre-commit.com/
+# prek: https://github.com/j178/prek#installation
+#
+# prek runs in the GitHub Workflow of this project on each push and PR.
+# Additionally, you can run it locally for faster fixing of issues using
+# $ uv tool install prek # or to run and download if not installed automatically:
+# $ uvx prek
+# $ prek install
+# After this, prek checks run automatically on each commit.
+#
+# You can also automatically set pre-commit as pre-commit hook for new git clones:
+# $ git config --global init.templateDir ~/.git-template
+# $ pre-commit init-templatedir ~/.git-template
+#
+# Further information:
+# https://pre-commit.com/#automatically-enabling-pre-commit-on-repositories
+# All hooks: https://pre-commit.com/hooks.html
+fail_fast: false
+default_stages: [pre-commit, pre-push]
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    # https://github.com/pre-commit/pre-commit-hooks/blob/main/README.md:
+    hooks:
+    -   id: trailing-whitespace
+        exclude: cli/_vendor
+    -   id: end-of-file-fixer
+        exclude: cli/_vendor
+    -   id: mixed-line-ending
+        args: ['--fix=lf']
+    -   id: check-added-large-files
+        args: ['--maxkb=40']
+    -   id: debug-statements
+    -   id: check-shebang-scripts-are-executable
+    -   id: check-merge-conflict
+    -   id: check-yaml
+
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.15.22
+    hooks:
+    -   id: ruff-check
+        types_or: [ python, pyi, pyproject ]
+        args: [ --fix ]
+        exclude: cli/_vendor
+    -   id: ruff-format
+        types_or: [ python, pyi ]
+
+-   repo: local
+    hooks:
+    -   id: git-diff
+        name: Show not staged changes (fixups may make them too)
+        entry: git diff --exit-code
+        language: system
+        pass_filenames: false
+        always_run: true
+
+-   repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+    -   id: shellcheck
+
+-   repo: https://github.com/openstack/bashate
+    rev: 2.1.1
+    hooks:
+    -   id: bashate
+
+- repo: https://github.com/igorshubovych/markdownlint-cli
+  rev: v0.49.1
+  hooks:
+  - id: markdownlint
+
+-   repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.411
+    hooks:
+    -   id: pyright
+        name: Run pyright
+        exclude: cli/_vendor
+        additional_dependencies:
+        - typing-extensions
+
+- repo: https://github.com/codespell-project/codespell
+  rev: v2.4.3
+  hooks:
+  - id: codespell
+    exclude: cli/_vendor
+    additional_dependencies:
+      - tomli
